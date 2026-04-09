@@ -89,7 +89,9 @@ async def on_ready():
         await fetch_bosses(force=True)
         print(f"✅ โหลดข้อมูลบอสสำเร็จ: {len(_cache['data'])} ตัว")
     except Exception as e:
-        print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {e}")
+        import traceback
+        print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
 # ==================== /kill ====================
