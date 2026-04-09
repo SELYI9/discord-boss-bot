@@ -24,7 +24,9 @@ SHEETS_CONFIG = {
 
 # ==================== GOOGLE SHEETS (sync) ====================
 def get_gs_client():
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    import json
+    info  = json.loads(os.environ["GOOGLE_CREDENTIALS"])
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
 
 _cache   = {"data": [], "ts": 0}
