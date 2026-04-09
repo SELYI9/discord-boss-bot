@@ -149,16 +149,20 @@ async def kill_autocomplete(interaction: discord.Interaction, current: str):
 
 
 # ==================== /list ====================
+def has_spawn_time(b: dict) -> bool:
+    t = b.get("spawn_time", "")
+    return bool(t) and t != "N/A" and t.strip() != ""
+
 class BossListView(discord.ui.View):
-    PER_PAGE = 10
+    PER_PAGE = 15
 
     def __init__(self, bosses: list, title: str, color: int, page: int = 0):
         super().__init__(timeout=120)
-        self.bosses      = bosses
+        self.bosses      = [b for b in bosses if has_spawn_time(b)]
         self.title       = title
         self.color       = color
         self.page        = page
-        self.total_pages = max(1, math.ceil(len(bosses) / self.PER_PAGE))
+        self.total_pages = max(1, math.ceil(len(self.bosses) / self.PER_PAGE))
         self._sync()
 
     def _sync(self):
@@ -167,26 +171,20 @@ class BossListView(discord.ui.View):
         self.page_btn.label    = f"{self.page + 1} / {self.total_pages}"
 
     def build_embed(self) -> discord.Embed:
-        start  = self.page * self.PER_PAGE
-        chunk  = self.bosses[start : start + self.PER_PAGE]
-        embed  = discord.Embed(title=self.title, color=self.color)
-        embed.description = f"```{'─' * 36}```"
+        start = self.page * self.PER_PAGE
+        chunk = self.bosses[start : start + self.PER_PAGE]
+        embed = discord.Embed(title=self.title, color=self.color)
 
         for sheet_name, cfg in SHEETS_CONFIG.items():
             rows = [b for b in chunk if b["sheet"] == sheet_name]
             if not rows:
                 continue
-            global_start = start + sum(
-                1 for b in self.bosses[:start] if b["sheet"] == sheet_name
-            )
             lines = "\n".join(
-                f"`{i+1:>2}.` **{b['name']}**\n"
-                f"      ⏰  `{b['spawn_time']}`"
-                for i, b in enumerate(rows, start=global_start)
+                f"`{b['spawn_time']}`  {b['name']}" for b in rows
             )
             total = sum(1 for b in self.bosses if b["sheet"] == sheet_name)
             embed.add_field(
-                name=f"{cfg['label']}  ({total} ตัว)",
+                name=f"{cfg['label']} — {total} ตัว",
                 value=lines,
                 inline=False,
             )
@@ -196,17 +194,17 @@ class BossListView(discord.ui.View):
         )
         return embed
 
-    @discord.ui.button(label="◀ Back", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary)
     async def back_btn(self, interaction: discord.Interaction, _btn):
         self.page -= 1
         self._sync()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(label="1 / 1", style=discord.ButtonStyle.primary, disabled=True)
+    @discord.ui.button(label="1 / 1", style=discord.ButtonStyle.secondary, disabled=True)
     async def page_btn(self, interaction: discord.Interaction, _btn):
         pass
 
-    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next_btn(self, interaction: discord.Interaction, _btn):
         self.page += 1
         self._sync()
@@ -216,26 +214,26 @@ class BossListView(discord.ui.View):
 @bot.tree.command(name="list", description="แสดงรายชื่อบอสพร้อมเวลาเกิด")
 @app_commands.describe(sheet="เลือก Sheet ที่ต้องการดู")
 @app_commands.choices(sheet=[
-    app_commands.Choice(name="ทั้งหมด",        value="all"),
-    app_commands.Choice(name="🟢 Boss Server",  value="Boss_Server"),
-    app_commands.Choice(name="🔴 Boss Invasion", value="Boss_Invasion"),
+    app_commands.Choice(name="ทั้งหมด",         value="all"),
+    app_commands.Choice(name="🟢 Boss Server",   value="Boss_Server"),
+    app_commands.Choice(name="🔴 Boss Invasion",  value="Boss_Invasion"),
 ])
 async def list_bosses(interaction: discord.Interaction, sheet: str = "all"):
     await interaction.response.defer()
     all_bosses = await fetch_bosses(force=True)
 
-    if sheet == "all":
-        bosses = all_bosses
-        title  = "📋 รายชื่อบอสทั้งหมด"
-        color  = 0x5865F2
-    elif sheet == "Boss_Server":
+    if sheet == "Boss_Server":
         bosses = [b for b in all_bosses if b["sheet"] == "Boss_Server"]
-        title  = "📋 Boss Server"
+        title  = "🟢 Boss Server"
         color  = 0x3498DB
-    else:
+    elif sheet == "Boss_Invasion":
         bosses = [b for b in all_bosses if b["sheet"] == "Boss_Invasion"]
-        title  = "📋 Boss Invasion"
+        title  = "🔴 Boss Invasion"
         color  = 0xE74C3C
+    else:
+        bosses = all_bosses
+        title  = "Boss List"
+        color  = 0x5865F2
 
     view = BossListView(bosses, title, color)
     await interaction.followup.send(embed=view.build_embed(), view=view)
