@@ -8,10 +8,12 @@ import time
 from datetime import datetime
 
 # ==================== CONFIG ====================
-BOT_TOKEN  = "MTQ5MTcyMTg3NjUwOTAzNjYyNg.Gm2SOe.yO6ZuBaxdH4-jzQv1G8MFQbArbKYom0WRdJcJo"
+import os
+BOT_TOKEN  = os.environ["BOT_TOKEN"]
 SHEET_ID   = "1_wOqn-4TFMNHpZ01tasNigXzXvdl5wU1gJkXX4RdpHo"
 CHANNEL_ID = 1491100565613314198
 ROLE_ID    = 1491100731565015132
+
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
