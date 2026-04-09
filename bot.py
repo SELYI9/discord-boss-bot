@@ -3,17 +3,17 @@ from discord import app_commands
 from discord.ext import commands
 from google.oauth2.service_account import Credentials
 import gspread
+import asyncio
 import math
 import time
+import os
 from datetime import datetime
 
 # ==================== CONFIG ====================
-import os
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
 SHEET_ID   = "1_wOqn-4TFMNHpZ01tasNigXzXvdl5wU1gJkXX4RdpHo"
 CHANNEL_ID = 1491100565613314198
 ROLE_ID    = 1491100731565015132
-
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -22,16 +22,15 @@ SHEETS_CONFIG = {
     "Boss_Invasion": {"label": "🔴 Boss Invasion",  "color": 0xE74C3C},
 }
 
-# ==================== GOOGLE SHEETS ====================
+# ==================== GOOGLE SHEETS (sync) ====================
 def get_gs_client():
     creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
     return gspread.authorize(creds)
 
-# Cache สำหรับ autocomplete (refresh ทุก 30 วินาที)
-_cache = {"data": [], "ts": 0}
-CACHE_TTL = 30
+_cache   = {"data": [], "ts": 0}
+CACHE_TTL = 60  # วินาที
 
-def fetch_all_bosses(force=False):
+def _fetch_bosses_sync(force=False):
     global _cache
     if not force and time.time() - _cache["ts"] < CACHE_TTL:
         return _cache["data"]
@@ -56,6 +55,27 @@ def fetch_all_bosses(force=False):
     _cache = {"data": bosses, "ts": time.time()}
     return bosses
 
+def _update_sheet_sync(sheet_name, row, time_str):
+    client = get_gs_client()
+    ws     = client.open_by_key(SHEET_ID).worksheet(sheet_name)
+    ws.batch_update(
+        [
+            {"range": f"C{row}", "values": [[time_str]]},
+            {"range": f"G{row}", "values": [["Not Sent"]]},
+            {"range": f"H{row}", "values": [["Not Sent"]]},
+        ],
+        value_input_option="USER_ENTERED",
+    )
+
+# ==================== ASYNC WRAPPERS ====================
+async def fetch_bosses(force=False):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_bosses_sync, force)
+
+async def update_sheet(sheet_name, row, time_str):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _update_sheet_sync, sheet_name, row, time_str)
+
 # ==================== BOT ====================
 intents = discord.Intents.default()
 bot     = commands.Bot(command_prefix="!", intents=intents)
@@ -63,6 +83,11 @@ bot     = commands.Bot(command_prefix="!", intents=intents)
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    try:
+        await fetch_bosses(force=True)
+        print(f"✅ โหลดข้อมูลบอสสำเร็จ: {len(_cache['data'])} ตัว")
+    except Exception as e:
+        print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {e}")
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
 # ==================== /kill ====================
@@ -72,7 +97,6 @@ async def on_ready():
     time="เวลาที่บอสตาย รูปแบบ HH:MM เช่น 14:30",
 )
 async def kill(interaction: discord.Interaction, boss: str, time: str):
-    # ตรวจสอบรูปแบบเวลา
     try:
         dt = datetime.strptime(time, "%H:%M")
     except ValueError:
@@ -81,7 +105,7 @@ async def kill(interaction: discord.Interaction, boss: str, time: str):
         )
         return
 
-    bosses = fetch_all_bosses(force=True)
+    bosses = await fetch_bosses(force=True)
     found  = next((b for b in bosses if b["name"] == boss), None)
 
     if not found:
@@ -92,20 +116,8 @@ async def kill(interaction: discord.Interaction, boss: str, time: str):
 
     await interaction.response.defer()
 
-    # อัปเดต Google Sheet (C = เวลาตาย, G = สถานะ 5 นาที, H = สถานะ 1 นาที)
-    client   = get_gs_client()
-    ws       = client.open_by_key(SHEET_ID).worksheet(found["sheet"])
-    row      = found["row"]
     time_str = f"{dt.hour:02d}:{dt.minute:02d}:00"
-
-    ws.batch_update(
-        [
-            {"range": f"C{row}", "values": [[time_str]]},
-            {"range": f"G{row}", "values": [["Not Sent"]]},
-            {"range": f"H{row}", "values": [["Not Sent"]]},
-        ],
-        value_input_option="USER_ENTERED",
-    )
+    await update_sheet(found["sheet"], found["row"], time_str)
 
     info  = SHEETS_CONFIG[found["sheet"]]
     embed = discord.Embed(title="✅ บันทึกเวลาตายบอสสำเร็จ", color=0x2ECC71)
@@ -119,14 +131,17 @@ async def kill(interaction: discord.Interaction, boss: str, time: str):
 
 @kill.autocomplete("boss")
 async def kill_autocomplete(interaction: discord.Interaction, current: str):
-    bosses  = fetch_all_bosses()
-    choices = []
-    for b in bosses:
-        label = "Server" if b["sheet"] == "Boss_Server" else "Invasion"
-        name  = f"[{label}] {b['name']}"
-        if current.lower() in b["name"].lower():
-            choices.append(app_commands.Choice(name=name, value=b["name"]))
-    return choices[:25]
+    try:
+        bosses  = _fetch_bosses_sync()  # ใช้ cache เท่านั้น ไม่ fetch ใหม่
+        choices = []
+        for b in bosses:
+            label = "Server" if b["sheet"] == "Boss_Server" else "Invasion"
+            name  = f"[{label}] {b['name']}"
+            if current.lower() in b["name"].lower():
+                choices.append(app_commands.Choice(name=name, value=b["name"]))
+        return choices[:25]
+    except Exception:
+        return []
 
 
 # ==================== /list ====================
@@ -183,7 +198,7 @@ class BossListView(discord.ui.View):
 @bot.tree.command(name="list", description="แสดงรายชื่อบอสทั้งหมดพร้อมเวลาเกิด")
 async def list_bosses(interaction: discord.Interaction):
     await interaction.response.defer()
-    bosses = fetch_all_bosses(force=True)
+    bosses = await fetch_bosses(force=True)
     view   = BossListView(bosses)
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
