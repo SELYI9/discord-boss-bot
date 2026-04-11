@@ -186,8 +186,14 @@ class BossListView(discord.ui.View):
             rows = [b for b in chunk if b["sheet"] == sheet_name]
             if not rows:
                 continue
+            def fmt_time(t: str) -> str:
+                try:
+                    parts = t.strip().split(":")
+                    return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+                except Exception:
+                    return t
             lines = "\n".join(
-                f"`{b['spawn_time']}`  {b['name']}" for b in rows
+                f"`{fmt_time(b['spawn_time'])}`  {b['name']}" for b in rows
             )
             total = sum(1 for b in self.bosses if b["sheet"] == sheet_name)
             embed.add_field(
