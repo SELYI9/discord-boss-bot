@@ -108,17 +108,23 @@ async def _get_vc() -> discord.VoiceClient | None:
         return None
 
     vc = guild.voice_client
-    if vc and vc.is_connected():
-        if vc.channel.id != VOICE_CHANNEL_ID:
-            await vc.move_to(channel)
+
+    # เชื่อมต่ออยู่และอยู่ในห้องที่ถูกต้องแล้ว
+    if vc and vc.is_connected() and vc.channel.id == VOICE_CHANNEL_ID:
         return vc
 
-    # ยังไม่ได้เชื่อมต่อ → connect ใหม่
+    # มี voice client แต่หลุดหรืออยู่ผิดห้อง → disconnect ก่อน
+    if vc:
+        try:
+            await vc.disconnect(force=True)
+        except Exception:
+            pass
+
+    # Connect ใหม่
     try:
-        return await channel.connect(self_deaf=True)
-    except discord.ClientException:
-        # Already connected — คืน voice_client ที่มีอยู่
-        return guild.voice_client
+        new_vc = await channel.connect(self_deaf=True)
+        print(f"✅ เชื่อมต่อ Voice Channel: {channel.name}")
+        return new_vc
     except Exception as e:
         print(f"⚠️ connect voice ไม่ได้: {e}")
         return None
