@@ -114,6 +114,9 @@ async def _get_vc() -> discord.VoiceClient | None:
     # ยังไม่ได้เชื่อมต่อ → connect ใหม่
     try:
         return await channel.connect(self_deaf=True)
+    except discord.ClientException:
+        # Already connected — คืน voice_client ที่มีอยู่
+        return guild.voice_client
     except Exception as e:
         print(f"⚠️ connect voice ไม่ได้: {e}")
         return None
