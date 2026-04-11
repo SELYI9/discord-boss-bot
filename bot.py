@@ -10,9 +10,9 @@ from datetime import datetime
 
 # ==================== CONFIG ====================
 BOT_TOKEN        = os.environ["BOT_TOKEN"]
-SHEET_ID         = "1_wOqn-4TFMNHpZ01tasNigXzXvdl5wU1gJkXX4RdpHo"
-CHANNEL_ID       = 1491100565613314198
-ROLE_ID          = 1491100731565015132
+SHEET_ID         = "1LaJoabXkfB-qzg9HgbB1D15FQfrI9yq4-M4GpKDN_N8"
+CHANNEL_ID       = 1491109222274826261
+ROLE_ID          = 1442005693182906420
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -81,6 +81,11 @@ async def update_sheet(sheet_name, row, time_str):
 intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
 tree    = app_commands.CommandTree(bot)
+
+@bot.event
+async def on_guild_join(guild):
+    await tree.sync(guild=guild)
+    print(f"✅ Sync คำสั่งไปยัง Server ใหม่: {guild.name}")
 
 @bot.event
 async def on_ready():
