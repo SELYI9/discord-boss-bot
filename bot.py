@@ -1,24 +1,18 @@
 import discord
 from discord import app_commands
-from discord.ext import tasks
 from google.oauth2.service_account import Credentials
 import gspread
 import asyncio
 import math
 import time
 import os
-import tempfile
 from datetime import datetime
-from gtts import gTTS
-import static_ffmpeg
-static_ffmpeg.add_paths()  # เพิ่ม ffmpeg binary เข้า PATH อัตโนมัติ
 
 # ==================== CONFIG ====================
 BOT_TOKEN        = os.environ["BOT_TOKEN"]
 SHEET_ID         = "1_wOqn-4TFMNHpZ01tasNigXzXvdl5wU1gJkXX4RdpHo"
 CHANNEL_ID       = 1491100565613314198
 ROLE_ID          = 1491100731565015132
-VOICE_CHANNEL_ID = 1491100500118999124
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -83,162 +77,10 @@ async def update_sheet(sheet_name, row, time_str):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _update_sheet_sync, sheet_name, row, time_str)
 
-# ==================== VOICE NOTIFICATION ====================
-_voice_notified: set = set()
-
-def _thai_name(name: str) -> str:
-    """ดึงเฉพาะชื่อภาษาไทย เช่น 'ฟลินท์ - Flynt' → 'ฟลินท์'"""
-    return name.split(" - ")[0].strip()
-
-def _make_tts_file(text: str) -> str:
-    tts = gTTS(text=text, lang="th", slow=False)
-    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        tts.save(f.name)
-        return f.name
-
-async def _get_vc() -> discord.VoiceClient | None:
-    """คืน VoiceClient ที่เชื่อมต่ออยู่ หรือ connect ใหม่ถ้าหลุด"""
-    guild = bot.guilds[0] if bot.guilds else None
-    if not guild:
-        return None
-
-    channel = guild.get_channel(VOICE_CHANNEL_ID)
-    if not channel or not isinstance(channel, discord.VoiceChannel):
-        print(f"⚠️ ไม่พบ Voice Channel ID: {VOICE_CHANNEL_ID}")
-        return None
-
-    vc = guild.voice_client
-
-    # เชื่อมต่ออยู่และอยู่ในห้องที่ถูกต้องแล้ว
-    if vc and vc.is_connected() and vc.channel.id == VOICE_CHANNEL_ID:
-        return vc
-
-    # มี voice client แต่หลุดหรืออยู่ผิดห้อง → disconnect ก่อน
-    if vc:
-        try:
-            await vc.disconnect(force=True)
-        except Exception:
-            pass
-
-    # Connect ใหม่
-    try:
-        new_vc = await channel.connect(self_deaf=True)
-        print(f"✅ เชื่อมต่อ Voice Channel: {channel.name}")
-        return new_vc
-    except Exception as e:
-        print(f"⚠️ connect voice ไม่ได้: {e}")
-        return None
-
-
-async def _play_voice(text: str):
-    vc = await _get_vc()
-    if not vc:
-        print("⚠️ _play_voice: ไม่มี voice client")
-        return
-
-    if vc.is_playing():
-        print("⚠️ _play_voice: กำลังเล่นอยู่ ข้าม")
-        return
-
-    print(f"🔊 กำลังสร้างไฟล์เสียง: {text}")
-    loop    = asyncio.get_event_loop()
-    try:
-        tmpfile = await loop.run_in_executor(None, _make_tts_file, text)
-        print(f"✅ สร้างไฟล์เสียงสำเร็จ: {tmpfile}")
-    except Exception as e:
-        print(f"⚠️ สร้างไฟล์เสียงไม่ได้: {e}")
-        return
-
-    def after_play(err):
-        if err:
-            print(f"⚠️ after_play error: {err}")
-        try:
-            os.unlink(tmpfile)
-        except Exception:
-            pass
-
-    try:
-        if not vc.is_connected():
-            print("⚠️ voice client หลุด พยายาม reconnect...")
-            vc = await _get_vc()
-            if not vc or not vc.is_connected():
-                print("⚠️ reconnect ไม่สำเร็จ")
-                os.unlink(tmpfile)
-                return
-        source = discord.FFmpegPCMAudio(tmpfile, executable="ffmpeg")
-        vc.play(source, after=after_play)
-        print(f"✅ เล่นเสียงแล้ว: {text}")
-    except Exception as e:
-        print(f"⚠️ เล่นเสียงไม่ได้: {e}")
-        try:
-            os.unlink(tmpfile)
-        except Exception:
-            pass
-
-
-def _notify_key(name: str, spawn: str, kind: str) -> str:
-    date = datetime.now().strftime("%Y-%m-%d")
-    return f"{date}_{name}_{spawn}_{kind}"
-
-def _parse_spawn(spawn_str: str):
-    for fmt in ["%H:%M:%S", "%H:%M"]:
-        try:
-            return datetime.strptime(spawn_str.strip(), fmt)
-        except ValueError:
-            continue
-    return None
-
-@tasks.loop(seconds=60)
-async def voice_task():
-    try:
-        bosses = _fetch_bosses_sync()
-        now    = datetime.now()
-
-        for boss in bosses:
-            spawn_str = boss.get("spawn_time", "")
-            if not spawn_str or spawn_str == "N/A":
-                continue
-
-            parsed = _parse_spawn(spawn_str)
-            if not parsed:
-                continue
-
-            spawn_today = now.replace(
-                hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0
-            )
-            diff = (spawn_today - now).total_seconds() / 60
-            name = _thai_name(boss["name"])
-
-            if 3 < diff <= 5:
-                key = _notify_key(boss["name"], spawn_str, "5min")
-                if key not in _voice_notified:
-                    _voice_notified.add(key)
-                    await _play_voice(f"บอส {name} จะเกิดในอีก 5 นาที")
-                    await asyncio.sleep(1)
-
-            elif 0 < diff <= 1:
-                key = _notify_key(boss["name"], spawn_str, "1min")
-                if key not in _voice_notified:
-                    _voice_notified.add(key)
-                    await _play_voice(f"บอส {name} จะเกิดในอีก 1 นาที")
-                    await asyncio.sleep(1)
-
-    except Exception as e:
-        print(f"⚠️ voice_task error: {e}")
-
 # ==================== BOT ====================
 intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
 tree    = app_commands.CommandTree(bot)
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """ถ้าบอทถูกเตะออกจาก voice channel ให้ rejoin ทันที"""
-    if member.id != bot.user.id:
-        return
-    if before.channel and after.channel is None:
-        await asyncio.sleep(1)
-        await _get_vc()
 
 @bot.event
 async def on_ready():
@@ -252,12 +94,6 @@ async def on_ready():
         import traceback
         print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
         print(traceback.format_exc())
-    # เข้า Voice Channel ทันทีตอนบอทเปิด
-    vc = await _get_vc()
-    if vc:
-        print(f"✅ เข้า Voice Channel สำเร็จ: {vc.channel.name}")
-
-    voice_task.start()
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
 # ==================== /kill ====================
@@ -403,14 +239,6 @@ async def list_bosses(interaction: discord.Interaction, sheet: str = "all"):
 
     view = BossListView(bosses, title, color)
     await interaction.followup.send(embed=view.build_embed(), view=view)
-
-
-# ==================== /test_voice ====================
-@tree.command(name="test_voice", description="ทดสอบเสียงในห้อง Voice Channel")
-async def test_voice(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    await _play_voice("ทดสอบระบบเสียง บอทพร้อมใช้งาน")
-    await interaction.followup.send("✅ ส่งคำสั่งเสียงแล้ว ดู log ถ้าไม่ได้ยินเสียง", ephemeral=True)
 
 
 # ==================== RUN ====================
