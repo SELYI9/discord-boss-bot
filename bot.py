@@ -123,7 +123,6 @@ async def _play_voice(text: str):
                 os.unlink(tmpfile)
             except Exception:
                 pass
-            asyncio.run_coroutine_threadsafe(vc.disconnect(), bot.loop)
 
         vc.play(source, after=after_play)
 
@@ -199,6 +198,17 @@ async def on_ready():
         import traceback
         print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
         print(traceback.format_exc())
+    # เข้า Voice Channel ทันทีตอนบอทเปิด
+    guild = bot.guilds[0] if bot.guilds else None
+    if guild:
+        vc_channel = guild.get_channel(VOICE_CHANNEL_ID)
+        if vc_channel and isinstance(vc_channel, discord.VoiceChannel):
+            try:
+                await vc_channel.connect()
+                print(f"✅ เข้า Voice Channel สำเร็จ: {vc_channel.name}")
+            except Exception as e:
+                print(f"⚠️ เข้า Voice Channel ไม่ได้: {e}")
+
     voice_task.start()
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
