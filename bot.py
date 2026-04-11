@@ -122,22 +122,34 @@ async def _get_vc() -> discord.VoiceClient | None:
 async def _play_voice(text: str):
     vc = await _get_vc()
     if not vc:
+        print("⚠️ _play_voice: ไม่มี voice client")
         return
 
     if vc.is_playing():
+        print("⚠️ _play_voice: กำลังเล่นอยู่ ข้าม")
         return
 
+    print(f"🔊 กำลังสร้างไฟล์เสียง: {text}")
     loop    = asyncio.get_event_loop()
-    tmpfile = await loop.run_in_executor(None, _make_tts_file, text)
+    try:
+        tmpfile = await loop.run_in_executor(None, _make_tts_file, text)
+        print(f"✅ สร้างไฟล์เสียงสำเร็จ: {tmpfile}")
+    except Exception as e:
+        print(f"⚠️ สร้างไฟล์เสียงไม่ได้: {e}")
+        return
 
     def after_play(err):
+        if err:
+            print(f"⚠️ after_play error: {err}")
         try:
             os.unlink(tmpfile)
         except Exception:
             pass
 
     try:
-        vc.play(discord.FFmpegPCMAudio(tmpfile), after=after_play)
+        source = discord.FFmpegPCMAudio(tmpfile, executable="ffmpeg")
+        vc.play(source, after=after_play)
+        print(f"✅ เล่นเสียงแล้ว: {text}")
     except Exception as e:
         print(f"⚠️ เล่นเสียงไม่ได้: {e}")
         try:
@@ -368,6 +380,14 @@ async def list_bosses(interaction: discord.Interaction, sheet: str = "all"):
 
     view = BossListView(bosses, title, color)
     await interaction.followup.send(embed=view.build_embed(), view=view)
+
+
+# ==================== /test_voice ====================
+@tree.command(name="test_voice", description="ทดสอบเสียงในห้อง Voice Channel")
+async def test_voice(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await _play_voice("ทดสอบระบบเสียง บอทพร้อมใช้งาน")
+    await interaction.followup.send("✅ ส่งคำสั่งเสียงแล้ว ดู log ถ้าไม่ได้ยินเสียง", ephemeral=True)
 
 
 # ==================== RUN ====================
