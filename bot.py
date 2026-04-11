@@ -10,6 +10,8 @@ import os
 import tempfile
 from datetime import datetime
 from gtts import gTTS
+import static_ffmpeg
+static_ffmpeg.add_paths()  # เพิ่ม ffmpeg binary เข้า PATH อัตโนมัติ
 
 # ==================== CONFIG ====================
 BOT_TOKEN        = os.environ["BOT_TOKEN"]
