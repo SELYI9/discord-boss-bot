@@ -161,10 +161,15 @@ async def _play_voice(text: str):
             pass
 
 
-@tasks.loop(seconds=30)
-async def keep_voice_task():
-    """คอยตรวจสอบทุก 30 วินาที ถ้าบอทหลุดออกจาก voice channel ให้ rejoin"""
-    await _get_vc()
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """ถ้าบอทถูกเตะออกจาก voice channel ให้ rejoin ทันที"""
+    if member.id != bot.user.id:
+        return
+    # บอทออกจากห้อง (ถูกเตะ หรือ disconnect)
+    if before.channel and after.channel is None:
+        await asyncio.sleep(1)
+        await _get_vc()
 
 def _notify_key(name: str, spawn: str, kind: str) -> str:
     date = datetime.now().strftime("%Y-%m-%d")
@@ -238,7 +243,6 @@ async def on_ready():
     if vc:
         print(f"✅ เข้า Voice Channel สำเร็จ: {vc.channel.name}")
 
-    keep_voice_task.start()
     voice_task.start()
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
