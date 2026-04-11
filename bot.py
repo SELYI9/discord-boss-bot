@@ -1,18 +1,22 @@
 import discord
 from discord import app_commands
+from discord.ext import tasks
 from google.oauth2.service_account import Credentials
 import gspread
 import asyncio
 import math
 import time
 import os
+import tempfile
 from datetime import datetime
+from gtts import gTTS
 
 # ==================== CONFIG ====================
-BOT_TOKEN  = os.environ["BOT_TOKEN"]
-SHEET_ID   = "1_wOqn-4TFMNHpZ01tasNigXzXvdl5wU1gJkXX4RdpHo"
-CHANNEL_ID = 1491100565613314198
-ROLE_ID    = 1491100731565015132
+BOT_TOKEN        = os.environ["BOT_TOKEN"]
+SHEET_ID         = "1_wOqn-4TFMNHpZ01tasNigXzXvdl5wU1gJkXX4RdpHo"
+CHANNEL_ID       = 1491100565613314198
+ROLE_ID          = 1491100731565015132
+VOICE_CHANNEL_ID = 1491100500118999124
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -28,8 +32,8 @@ def get_gs_client():
     creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
 
-_cache   = {"data": [], "ts": 0}
-CACHE_TTL = 60  # วินาที
+_cache    = {"data": [], "ts": 0}
+CACHE_TTL = 60
 
 def _fetch_bosses_sync(force=False):
     global _cache
@@ -77,6 +81,109 @@ async def update_sheet(sheet_name, row, time_str):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _update_sheet_sync, sheet_name, row, time_str)
 
+# ==================== VOICE NOTIFICATION ====================
+_voice_notified: set = set()
+
+def _thai_name(name: str) -> str:
+    """ดึงเฉพาะชื่อภาษาไทย เช่น 'ฟลินท์ - Flynt' → 'ฟลินท์'"""
+    return name.split(" - ")[0].strip()
+
+def _make_tts_file(text: str) -> str:
+    tts = gTTS(text=text, lang="th", slow=False)
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        tts.save(f.name)
+        return f.name
+
+async def _play_voice(text: str):
+    guild = bot.guilds[0] if bot.guilds else None
+    if not guild:
+        return
+
+    channel = guild.get_channel(VOICE_CHANNEL_ID)
+    if not channel or not isinstance(channel, discord.VoiceChannel):
+        print(f"⚠️ ไม่พบ Voice Channel ID: {VOICE_CHANNEL_ID}")
+        return
+
+    # ถ้ากำลังเล่นอยู่ให้ข้าม
+    if guild.voice_client and guild.voice_client.is_playing():
+        return
+
+    loop    = asyncio.get_event_loop()
+    tmpfile = await loop.run_in_executor(None, _make_tts_file, text)
+
+    try:
+        vc = guild.voice_client or await channel.connect()
+        if vc.channel != channel:
+            await vc.move_to(channel)
+
+        source = discord.FFmpegPCMAudio(tmpfile)
+
+        def after_play(err):
+            try:
+                os.unlink(tmpfile)
+            except Exception:
+                pass
+            asyncio.run_coroutine_threadsafe(vc.disconnect(), bot.loop)
+
+        vc.play(source, after=after_play)
+
+    except Exception as e:
+        print(f"⚠️ เล่นเสียงไม่ได้: {e}")
+        try:
+            os.unlink(tmpfile)
+        except Exception:
+            pass
+
+def _notify_key(name: str, spawn: str, kind: str) -> str:
+    date = datetime.now().strftime("%Y-%m-%d")
+    return f"{date}_{name}_{spawn}_{kind}"
+
+def _parse_spawn(spawn_str: str):
+    for fmt in ["%H:%M:%S", "%H:%M"]:
+        try:
+            return datetime.strptime(spawn_str.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+@tasks.loop(seconds=60)
+async def voice_task():
+    try:
+        bosses = _fetch_bosses_sync()
+        now    = datetime.now()
+
+        for boss in bosses:
+            spawn_str = boss.get("spawn_time", "")
+            if not spawn_str or spawn_str == "N/A":
+                continue
+
+            parsed = _parse_spawn(spawn_str)
+            if not parsed:
+                continue
+
+            spawn_today = now.replace(
+                hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0
+            )
+            diff = (spawn_today - now).total_seconds() / 60
+            name = _thai_name(boss["name"])
+
+            if 3 < diff <= 5:
+                key = _notify_key(boss["name"], spawn_str, "5min")
+                if key not in _voice_notified:
+                    _voice_notified.add(key)
+                    await _play_voice(f"บอส {name} จะเกิดในอีก 5 นาที")
+                    await asyncio.sleep(1)
+
+            elif 0 < diff <= 1:
+                key = _notify_key(boss["name"], spawn_str, "1min")
+                if key not in _voice_notified:
+                    _voice_notified.add(key)
+                    await _play_voice(f"บอส {name} จะเกิดในอีก 1 นาที")
+                    await asyncio.sleep(1)
+
+    except Exception as e:
+        print(f"⚠️ voice_task error: {e}")
+
 # ==================== BOT ====================
 intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
@@ -92,6 +199,7 @@ async def on_ready():
         import traceback
         print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
         print(traceback.format_exc())
+    voice_task.start()
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
 # ==================== /kill ====================
@@ -136,7 +244,7 @@ async def kill(interaction: discord.Interaction, boss: str, time: str):
 @kill.autocomplete("boss")
 async def kill_autocomplete(interaction: discord.Interaction, current: str):
     try:
-        bosses  = _fetch_bosses_sync()  # ใช้ cache เท่านั้น ไม่ fetch ใหม่
+        bosses  = _fetch_bosses_sync()
         choices = []
         for b in bosses:
             label = "Server" if b["sheet"] == "Boss_Server" else "Invasion"
