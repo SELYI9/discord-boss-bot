@@ -161,16 +161,6 @@ async def _play_voice(text: str):
             pass
 
 
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """ถ้าบอทถูกเตะออกจาก voice channel ให้ rejoin ทันที"""
-    if member.id != bot.user.id:
-        return
-    # บอทออกจากห้อง (ถูกเตะ หรือ disconnect)
-    if before.channel and after.channel is None:
-        await asyncio.sleep(1)
-        await _get_vc()
-
 def _notify_key(name: str, spawn: str, kind: str) -> str:
     date = datetime.now().strftime("%Y-%m-%d")
     return f"{date}_{name}_{spawn}_{kind}"
@@ -225,6 +215,15 @@ async def voice_task():
 intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
 tree    = app_commands.CommandTree(bot)
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """ถ้าบอทถูกเตะออกจาก voice channel ให้ rejoin ทันที"""
+    if member.id != bot.user.id:
+        return
+    if before.channel and after.channel is None:
+        await asyncio.sleep(1)
+        await _get_vc()
 
 @bot.event
 async def on_ready():
