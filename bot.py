@@ -94,44 +94,62 @@ def _make_tts_file(text: str) -> str:
         tts.save(f.name)
         return f.name
 
-async def _play_voice(text: str):
+async def _get_vc() -> discord.VoiceClient | None:
+    """คืน VoiceClient ที่เชื่อมต่ออยู่ หรือ connect ใหม่ถ้าหลุด"""
     guild = bot.guilds[0] if bot.guilds else None
     if not guild:
-        return
+        return None
 
     channel = guild.get_channel(VOICE_CHANNEL_ID)
     if not channel or not isinstance(channel, discord.VoiceChannel):
         print(f"⚠️ ไม่พบ Voice Channel ID: {VOICE_CHANNEL_ID}")
+        return None
+
+    vc = guild.voice_client
+    if vc and vc.is_connected():
+        if vc.channel.id != VOICE_CHANNEL_ID:
+            await vc.move_to(channel)
+        return vc
+
+    # ยังไม่ได้เชื่อมต่อ → connect ใหม่
+    try:
+        return await channel.connect(self_deaf=True)
+    except Exception as e:
+        print(f"⚠️ connect voice ไม่ได้: {e}")
+        return None
+
+
+async def _play_voice(text: str):
+    vc = await _get_vc()
+    if not vc:
         return
 
-    # ถ้ากำลังเล่นอยู่ให้ข้าม
-    if guild.voice_client and guild.voice_client.is_playing():
+    if vc.is_playing():
         return
 
     loop    = asyncio.get_event_loop()
     tmpfile = await loop.run_in_executor(None, _make_tts_file, text)
 
+    def after_play(err):
+        try:
+            os.unlink(tmpfile)
+        except Exception:
+            pass
+
     try:
-        vc = guild.voice_client or await channel.connect()
-        if vc.channel != channel:
-            await vc.move_to(channel)
-
-        source = discord.FFmpegPCMAudio(tmpfile)
-
-        def after_play(err):
-            try:
-                os.unlink(tmpfile)
-            except Exception:
-                pass
-
-        vc.play(source, after=after_play)
-
+        vc.play(discord.FFmpegPCMAudio(tmpfile), after=after_play)
     except Exception as e:
         print(f"⚠️ เล่นเสียงไม่ได้: {e}")
         try:
             os.unlink(tmpfile)
         except Exception:
             pass
+
+
+@tasks.loop(seconds=30)
+async def keep_voice_task():
+    """คอยตรวจสอบทุก 30 วินาที ถ้าบอทหลุดออกจาก voice channel ให้ rejoin"""
+    await _get_vc()
 
 def _notify_key(name: str, spawn: str, kind: str) -> str:
     date = datetime.now().strftime("%Y-%m-%d")
@@ -199,16 +217,11 @@ async def on_ready():
         print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
         print(traceback.format_exc())
     # เข้า Voice Channel ทันทีตอนบอทเปิด
-    guild = bot.guilds[0] if bot.guilds else None
-    if guild:
-        vc_channel = guild.get_channel(VOICE_CHANNEL_ID)
-        if vc_channel and isinstance(vc_channel, discord.VoiceChannel):
-            try:
-                await vc_channel.connect()
-                print(f"✅ เข้า Voice Channel สำเร็จ: {vc_channel.name}")
-            except Exception as e:
-                print(f"⚠️ เข้า Voice Channel ไม่ได้: {e}")
+    vc = await _get_vc()
+    if vc:
+        print(f"✅ เข้า Voice Channel สำเร็จ: {vc.channel.name}")
 
+    keep_voice_task.start()
     voice_task.start()
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
