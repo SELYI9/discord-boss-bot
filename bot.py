@@ -152,6 +152,13 @@ async def _play_voice(text: str):
             pass
 
     try:
+        if not vc.is_connected():
+            print("⚠️ voice client หลุด พยายาม reconnect...")
+            vc = await _get_vc()
+            if not vc or not vc.is_connected():
+                print("⚠️ reconnect ไม่สำเร็จ")
+                os.unlink(tmpfile)
+                return
         source = discord.FFmpegPCMAudio(tmpfile, executable="ffmpeg")
         vc.play(source, after=after_play)
         print(f"✅ เล่นเสียงแล้ว: {text}")
