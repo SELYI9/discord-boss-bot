@@ -1,6 +1,5 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
 from google.oauth2.service_account import Credentials
 import gspread
 import asyncio
@@ -80,11 +79,12 @@ async def update_sheet(sheet_name, row, time_str):
 
 # ==================== BOT ====================
 intents = discord.Intents.default()
-bot     = commands.Bot(command_prefix="!", intents=intents)
+bot     = discord.Client(intents=intents)
+tree    = app_commands.CommandTree(bot)
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+    await tree.sync()
     try:
         await fetch_bosses(force=True)
         print(f"✅ โหลดข้อมูลบอสสำเร็จ: {len(_cache['data'])} ตัว")
@@ -95,7 +95,7 @@ async def on_ready():
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
 # ==================== /kill ====================
-@bot.tree.command(name="kill", description="บันทึกเวลาที่บอสตาย")
+@tree.command(name="kill", description="บันทึกเวลาที่บอสตาย")
 @app_commands.describe(
     boss="ชื่อบอส (พิมพ์เพื่อค้นหา)",
     time="เวลาที่บอสตาย รูปแบบ HH:MM เช่น 14:30",
@@ -211,7 +211,7 @@ class BossListView(discord.ui.View):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
-@bot.tree.command(name="list", description="แสดงรายชื่อบอสพร้อมเวลาเกิด")
+@tree.command(name="list", description="แสดงรายชื่อบอสพร้อมเวลาเกิด")
 @app_commands.describe(sheet="เลือก Sheet ที่ต้องการดู")
 @app_commands.choices(sheet=[
     app_commands.Choice(name="ทั้งหมด",         value="all"),
@@ -240,4 +240,4 @@ async def list_bosses(interaction: discord.Interaction, sheet: str = "all"):
 
 
 # ==================== RUN ====================
-bot.run(BOT_TOKEN)
+bot.run(BOT_TOKEN, log_handler=None)
