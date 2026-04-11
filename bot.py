@@ -223,6 +223,8 @@ tree    = app_commands.CommandTree(bot)
 
 @bot.event
 async def on_ready():
+    for guild in bot.guilds:
+        await tree.sync(guild=guild)
     await tree.sync()
     try:
         await fetch_bosses(force=True)
