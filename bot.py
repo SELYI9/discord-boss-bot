@@ -165,7 +165,13 @@ class BossListView(discord.ui.View):
 
     def __init__(self, bosses: list, title: str, color: int, page: int = 0):
         super().__init__(timeout=120)
-        self.bosses      = [b for b in bosses if has_spawn_time(b)]
+        def sort_key(b):
+            try:
+                parts = b["spawn_time"].strip().split(":")
+                return int(parts[0]) * 60 + int(parts[1])
+            except Exception:
+                return 9999
+        self.bosses      = sorted([b for b in bosses if has_spawn_time(b)], key=sort_key)
         self.title       = title
         self.color       = color
         self.page        = page
