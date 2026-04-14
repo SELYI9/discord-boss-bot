@@ -168,7 +168,13 @@ class BossListView(discord.ui.View):
         def sort_key(b):
             try:
                 parts = b["spawn_time"].strip().split(":")
-                return int(parts[0]) * 60 + int(parts[1])
+                spawn_minutes = int(parts[0]) * 60 + int(parts[1])
+                now = datetime.now()
+                now_minutes = now.hour * 60 + now.minute
+                diff = spawn_minutes - now_minutes
+                if diff < 0:
+                    diff += 24 * 60  # เกิดพรุ่งนี้
+                return diff
             except Exception:
                 return 9999
         self.bosses      = sorted([b for b in bosses if has_spawn_time(b)], key=sort_key)
