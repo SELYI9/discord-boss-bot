@@ -169,8 +169,9 @@ class BossListView(discord.ui.View):
             try:
                 parts = b["spawn_time"].strip().split(":")
                 spawn_minutes = int(parts[0]) * 60 + int(parts[1])
-                now = datetime.now()
-                now_minutes = now.hour * 60 + now.minute
+                from datetime import timezone, timedelta
+                now_bkk = datetime.now(timezone.utc) + timedelta(hours=7)
+                now_minutes = now_bkk.hour * 60 + now_bkk.minute
                 diff = spawn_minutes - now_minutes
                 if diff < 0:
                     diff += 24 * 60  # เกิดพรุ่งนี้
