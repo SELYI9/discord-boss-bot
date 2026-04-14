@@ -164,7 +164,7 @@ class BossListView(discord.ui.View):
     PER_PAGE = 15
 
     def __init__(self, bosses: list, title: str, color: int, page: int = 0):
-        super().__init__(timeout=120)
+        super().__init__(timeout=None)
         def sort_key(b):
             try:
                 parts = b["spawn_time"].strip().split(":")
