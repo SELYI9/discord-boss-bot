@@ -6,7 +6,7 @@ import asyncio
 import math
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 # ==================== CONFIG ====================
 BOT_TOKEN        = os.environ["BOT_TOKEN"]
@@ -50,6 +50,8 @@ def _fetch_bosses_sync(force=False):
                 "name":       row[0],
                 "sheet":      sheet_name,
                 "row":        i,
+                "cd_hours":   int(row[1]) if row[1] else 0,
+                "death_time": row[2] if len(row) > 2 else "",
                 "spawn_time": row[3] if len(row) > 3 else "N/A",
             })
 
@@ -76,6 +78,29 @@ async def fetch_bosses(force=False):
 async def update_sheet(sheet_name, row, time_str):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _update_sheet_sync, sheet_name, row, time_str)
+
+# ==================== HELPERS ====================
+_BKK = timezone(timedelta(hours=7))
+
+def calc_spawn_datetime(death_time_str: str, cd_hours: int):
+    if not death_time_str or not cd_hours:
+        return None
+    try:
+        parts  = death_time_str.strip().split(":")
+        hour   = int(parts[0])
+        minute = int(parts[1])
+        now    = datetime.now(_BKK)
+        death  = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        spawn  = death + timedelta(hours=cd_hours)
+        if spawn > now + timedelta(hours=cd_hours, minutes=5):
+            death -= timedelta(days=1)
+            spawn  = death + timedelta(hours=cd_hours)
+        if spawn < now - timedelta(minutes=5):
+            death -= timedelta(days=1)
+            spawn  = death + timedelta(hours=cd_hours)
+        return spawn
+    except Exception:
+        return None
 
 # ==================== BOT ====================
 intents = discord.Intents.default()
@@ -156,67 +181,80 @@ async def kill_autocomplete(interaction: discord.Interaction, current: str):
 
 
 # ==================== /list ====================
-def has_spawn_time(b: dict) -> bool:
-    t = b.get("spawn_time", "")
-    return bool(t) and t != "N/A" and t.strip() != ""
-
 class BossListView(discord.ui.View):
     PER_PAGE = 15
 
     def __init__(self, bosses: list, title: str, color: int, page: int = 0):
         super().__init__(timeout=None)
-        def sort_key(b):
-            try:
-                parts = b["spawn_time"].strip().split(":")
-                spawn_minutes = int(parts[0]) * 60 + int(parts[1])
-                from datetime import timezone, timedelta
-                now_bkk = datetime.now(timezone.utc) + timedelta(hours=7)
-                now_minutes = now_bkk.hour * 60 + now_bkk.minute
-                diff = spawn_minutes - now_minutes
-                if diff < 0:
-                    diff += 24 * 60  # เกิดพรุ่งนี้
-                return diff
-            except Exception:
-                return 9999
-        self.bosses      = sorted([b for b in bosses if has_spawn_time(b)], key=sort_key)
-        self.title       = title
-        self.color       = color
-        self.page        = page
-        self.total_pages = max(1, math.ceil(len(self.bosses) / self.PER_PAGE))
+        self.title = title
+        self.color = color
+        self.page  = page
+        self.pages = self._build_pages(bosses)
         self._sync()
+
+    def _build_pages(self, bosses: list) -> list:
+        dated = []
+        for b in bosses:
+            spawn_dt = calc_spawn_datetime(b.get("death_time", ""), b.get("cd_hours", 0))
+            if spawn_dt:
+                dated.append((spawn_dt, b))
+
+        date_groups: dict = {}
+        for spawn_dt, b in dated:
+            date_groups.setdefault(spawn_dt.date(), []).append((spawn_dt, b))
+
+        for d in date_groups:
+            date_groups[d].sort(key=lambda x: x[0])
+
+        pages = []
+        for date in sorted(date_groups.keys()):
+            items = date_groups[date]
+            for i in range(0, len(items), self.PER_PAGE):
+                pages.append({"date": date, "items": items[i:i + self.PER_PAGE]})
+
+        return pages or [{"date": datetime.now(_BKK).date(), "items": []}]
 
     def _sync(self):
         self.back_btn.disabled = self.page == 0
-        self.next_btn.disabled = self.page >= self.total_pages - 1
-        self.page_btn.label    = f"{self.page + 1} / {self.total_pages}"
+        self.next_btn.disabled = self.page >= len(self.pages) - 1
+        self.page_btn.label    = f"{self.page + 1} / {len(self.pages)}"
 
     def build_embed(self) -> discord.Embed:
-        start = self.page * self.PER_PAGE
-        chunk = self.bosses[start : start + self.PER_PAGE]
-        embed = discord.Embed(title=self.title, color=self.color)
+        now       = datetime.now(_BKK)
+        today     = now.date()
+        page_data = self.pages[self.page]
+        date      = page_data["date"]
+        items     = page_data["items"]
+
+        be_year  = date.year + 543
+        date_str = f"{date.day:02d}/{date.month:02d}/{be_year}"
+        day_th   = ["จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส.", "อา."]
+        day_name = day_th[date.weekday()]
+
+        if date == today:
+            date_header = f"📅 วันนี้ — {day_name} {date_str}"
+        elif date == today + timedelta(days=1):
+            date_header = f"📅 พรุ่งนี้ — {day_name} {date_str}"
+        else:
+            date_header = f"📅 {day_name} {date_str}"
+
+        total_bosses = sum(len(p["items"]) for p in self.pages)
+        embed = discord.Embed(title=self.title, description=date_header, color=self.color)
 
         for sheet_name, cfg in SHEETS_CONFIG.items():
-            rows = [b for b in chunk if b["sheet"] == sheet_name]
+            rows = [(dt, b) for dt, b in items if b["sheet"] == sheet_name]
             if not rows:
                 continue
-            def fmt_time(t: str) -> str:
-                try:
-                    parts = t.strip().split(":")
-                    return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
-                except Exception:
-                    return t
             lines = "\n".join(
-                f"`{fmt_time(b['spawn_time'])}`  {b['name']}" for b in rows
+                f"`{dt.hour:02d}:{dt.minute:02d}` {b['name']}" for dt, b in rows
             )
-            total = sum(1 for b in self.bosses if b["sheet"] == sheet_name)
-            embed.add_field(
-                name=f"{cfg['label']} — {total} ตัว",
-                value=lines,
-                inline=False,
-            )
+            embed.add_field(name=cfg["label"], value=lines, inline=False)
+
+        if not items:
+            embed.add_field(name="—", value="ไม่มีบอสในช่วงนี้", inline=False)
 
         embed.set_footer(
-            text=f"หน้า {self.page + 1}/{self.total_pages}  •  รวม {len(self.bosses)} ตัว"
+            text=f"หน้า {self.page + 1}/{len(self.pages)}  •  รวม {total_bosses} ตัว"
         )
         return embed
 
