@@ -294,12 +294,12 @@ class KillButtonView(discord.ui.View):
         self.boss     = boss
         self.spawn_dt = spawn_dt
 
-    @discord.ui.button(label="UPDATE", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="UPDATE", style=discord.ButtonStyle.success, emoji="💀")
     async def kill_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = KillModal(boss=self.boss, msg_id=interaction.message.id)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="MISS", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="MISS", style=discord.ButtonStyle.danger, emoji="💤")
     async def miss_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         spawn_dt = self.spawn_dt
         time_str = f"{spawn_dt.hour:02d}:{spawn_dt.minute:02d}:00"
