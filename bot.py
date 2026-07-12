@@ -3,22 +3,21 @@ from discord import app_commands
 from google.oauth2.service_account import Credentials
 import gspread
 import asyncio
-import math
 import time
 import os
 from datetime import datetime, timezone, timedelta
 
 # ==================== CONFIG ====================
-BOT_TOKEN        = os.environ["BOT_TOKEN"]
-SHEET_ID         = "1LaJoabXkfB-qzg9HgbB1D15FQfrI9yq4-M4GpKDN_N8"
-CHANNEL_ID       = 1491109222274826261
-ROLE_ID          = 1442005693182906420
+BOT_TOKEN  = os.environ["BOT_TOKEN"]
+SHEET_ID   = "1LaJoabXkfB-qzg9HgbB1D15FQfrI9yq4-M4GpKDN_N8"
+CHANNEL_ID = 1491109222274826261
+ROLE_ID    = 1442005693182906420
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 SHEETS_CONFIG = {
-    "Boss_Server":   {"label": "🟢 Boss Server",   "color": 0x3498DB},
-    "Boss_Invasion": {"label": "🔴 Boss Invasion",  "color": 0xE74C3C},
+    "Boss_Server":   {"label": "🟢 Boss Server",  "color": 0x3498DB, "mention": True},
+    "Boss_Invasion": {"label": "🔴 Boss Invasion", "color": 0xE74C3C, "mention": False},
 }
 
 # ==================== GOOGLE SHEETS (sync) ====================
@@ -53,6 +52,8 @@ def _fetch_bosses_sync(force=False):
                 "cd_hours":   int(row[1]) if row[1] else 0,
                 "death_time": row[2] if len(row) > 2 else "",
                 "spawn_time": row[3] if len(row) > 3 else "N/A",
+                "notif_5min": row[6] if len(row) > 6 else "Not Sent",
+                "notif_1min": row[7] if len(row) > 7 else "Not Sent",
             })
 
     _cache = {"data": bosses, "ts": time.time()}
@@ -70,6 +71,12 @@ def _update_sheet_sync(sheet_name, row, time_str):
         value_input_option="USER_ENTERED",
     )
 
+def _update_notif_status_sync(sheet_name, row, col, value):
+    client = get_gs_client()
+    ws     = client.open_by_key(SHEET_ID).worksheet(sheet_name)
+    col_letter = "G" if col == 7 else "H"
+    ws.update(f"{col_letter}{row}", [[value]])
+
 # ==================== ASYNC WRAPPERS ====================
 async def fetch_bosses(force=False):
     loop = asyncio.get_event_loop()
@@ -78,6 +85,10 @@ async def fetch_bosses(force=False):
 async def update_sheet(sheet_name, row, time_str):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _update_sheet_sync, sheet_name, row, time_str)
+
+async def update_notif_status(sheet_name, row, col, value):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _update_notif_status_sync, sheet_name, row, col, value)
 
 # ==================== HELPERS ====================
 _BKK = timezone(timedelta(hours=7))
@@ -107,24 +118,187 @@ intents = discord.Intents.default()
 bot     = discord.Client(intents=intents)
 tree    = app_commands.CommandTree(bot)
 
-@bot.event
-async def on_guild_join(guild):
-    await tree.sync(guild=guild)
-    print(f"✅ Sync คำสั่งไปยัง Server ใหม่: {guild.name}")
+# tracking message_id → boss info สำหรับ auto-update
+# key: message_id, value: {"boss": boss_dict, "spawn_dt": datetime, "pressed": bool}
+_pending_auto_update: dict = {}
 
-@bot.event
-async def on_ready():
-    for guild in bot.guilds:
-        await tree.sync(guild=guild)
-    await tree.sync()
-    try:
-        await fetch_bosses(force=True)
-        print(f"✅ โหลดข้อมูลบอสสำเร็จ: {len(_cache['data'])} ตัว")
-    except Exception as e:
-        import traceback
-        print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
-        print(traceback.format_exc())
-    print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
+# ==================== NOTIFICATION LOOP ====================
+async def notification_loop():
+    await bot.wait_until_ready()
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        print(f"⚠️ ไม่พบ Channel ID: {CHANNEL_ID}")
+        return
+
+    print("✅ Notification loop เริ่มทำงาน")
+
+    while not bot.is_closed():
+        try:
+            bosses = await fetch_bosses(force=True)
+            now    = datetime.now(_BKK)
+
+            for boss in bosses:
+                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"])
+                if not spawn_dt:
+                    continue
+
+                diff_min = (spawn_dt - now).total_seconds() / 60
+                cfg      = SHEETS_CONFIG[boss["sheet"]]
+
+                # แจ้งเตือน 5 นาที
+                if 3 < diff_min <= 5 and boss["notif_5min"] != "Sent":
+                    embed = _build_notif_embed(boss, spawn_dt, cfg, minutes=5)
+                    mention = f"<@&{ROLE_ID}> " if cfg["mention"] else ""
+                    await channel.send(
+                        content=f"{mention}⚠️ [5 นาที] **{boss['name']}** กำลังจะเกิด!",
+                        embed=embed,
+                    )
+                    await update_notif_status(boss["sheet"], boss["row"], 7, "Sent")
+                    boss["notif_5min"] = "Sent"
+
+                # แจ้งเตือน 1 นาที — พร้อมปุ่มป้อนเวลาตาย
+                elif 0 < diff_min <= 1 and boss["notif_1min"] != "Sent":
+                    embed   = _build_notif_embed(boss, spawn_dt, cfg, minutes=1)
+                    mention = f"<@&{ROLE_ID}> " if cfg["mention"] else ""
+                    view    = KillButtonView(boss, spawn_dt)
+                    msg = await channel.send(
+                        content=f"{mention}🚨 [1 นาที] **{boss['name']}** กำลังจะเกิด!",
+                        embed=embed,
+                        view=view,
+                    )
+                    await update_notif_status(boss["sheet"], boss["row"], 8, "Sent")
+                    boss["notif_1min"] = "Sent"
+
+                    # ลงทะเบียนรอ auto-update หลัง spawn + 5 นาที
+                    _pending_auto_update[msg.id] = {
+                        "boss":     boss,
+                        "spawn_dt": spawn_dt,
+                        "pressed":  False,
+                        "msg":      msg,
+                    }
+
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Notification loop error: {e}")
+            print(traceback.format_exc())
+
+        await asyncio.sleep(60)
+
+
+def _build_notif_embed(boss, spawn_dt, cfg, minutes):
+    title = "⚠️ บอสกำลังจะเกิด!" if minutes == 5 else "🚨 บอสกำลังจะเกิดใน 1 นาที!"
+    embed = discord.Embed(title=title, color=cfg["color"])
+    embed.set_author(name=cfg["label"])
+    embed.add_field(name="👾 ชื่อบอส",  value=f"**{boss['name']}**",                          inline=True)
+    embed.add_field(name="⏰ เวลาเกิด", value=f"**{spawn_dt.hour:02d}:{spawn_dt.minute:02d} น.**", inline=True)
+    embed.set_footer(text=f"Boss Tracker • แจ้งเตือนก่อนเกิด {minutes} นาที")
+    embed.timestamp = datetime.now(_BKK)
+    return embed
+
+
+# ==================== AUTO-UPDATE LOOP ====================
+async def auto_update_loop():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        now      = datetime.now(_BKK)
+        to_clean = []
+
+        for msg_id, entry in list(_pending_auto_update.items()):
+            if entry["pressed"]:
+                to_clean.append(msg_id)
+                continue
+
+            spawn_dt    = entry["spawn_dt"]
+            deadline    = spawn_dt + timedelta(minutes=5)
+
+            if now >= deadline:
+                boss     = entry["boss"]
+                time_str = f"{spawn_dt.hour:02d}:{spawn_dt.minute:02d}:00"
+                try:
+                    await update_sheet(boss["sheet"], boss["row"], time_str)
+                    # แก้ embed ของ message เดิม ให้แสดงว่า auto-update แล้ว
+                    msg = entry.get("msg")
+                    if msg:
+                        embed = discord.Embed(
+                            title="🔄 Auto-Update เวลาตาย",
+                            description=f"ไม่มีการป้อนเวลา ระบบบันทึกอัตโนมัติ",
+                            color=0x95A5A6,
+                        )
+                        embed.add_field(name="👾 ชื่อบอส",  value=f"**{boss['name']}**",  inline=True)
+                        embed.add_field(name="💀 เวลาตาย",  value=f"**{time_str[:5]} น.**", inline=True)
+                        await msg.edit(embed=embed, view=None)
+                    print(f"🔄 Auto-update: {boss['name']} → {time_str[:5]}")
+                except Exception as e:
+                    print(f"⚠️ Auto-update error ({boss['name']}): {e}")
+                to_clean.append(msg_id)
+
+        for msg_id in to_clean:
+            _pending_auto_update.pop(msg_id, None)
+
+        await asyncio.sleep(30)
+
+
+# ==================== KILL BUTTON + MODAL ====================
+class KillModal(discord.ui.Modal, title="ป้อนเวลาที่บอสตาย"):
+    death_time = discord.ui.TextInput(
+        label="เวลาตาย (HH:MM)",
+        placeholder="เช่น 14:30",
+        min_length=4,
+        max_length=5,
+    )
+
+    def __init__(self, boss: dict, msg_id: int):
+        super().__init__()
+        self.boss   = boss
+        self.msg_id = msg_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        time_str_raw = self.death_time.value.strip()
+        try:
+            dt = datetime.strptime(time_str_raw, "%H:%M")
+        except ValueError:
+            await interaction.response.send_message(
+                "⚠️ รูปแบบเวลาผิด กรุณาใช้ HH:MM เช่น `14:30`", ephemeral=True
+            )
+            return
+
+        time_str = f"{dt.hour:02d}:{dt.minute:02d}:00"
+        await update_sheet(self.boss["sheet"], self.boss["row"], time_str)
+
+        # ทำเครื่องหมายว่ากดแล้ว ไม่ต้อง auto-update
+        if self.msg_id in _pending_auto_update:
+            _pending_auto_update[self.msg_id]["pressed"] = True
+
+        cfg   = SHEETS_CONFIG[self.boss["sheet"]]
+        embed = discord.Embed(title="✅ บันทึกเวลาตายบอสสำเร็จ", color=0x2ECC71)
+        embed.add_field(name="👾 ชื่อบอส", value=f"**{self.boss['name']}**",    inline=True)
+        embed.add_field(name="📋 Sheet",   value=cfg["label"],                  inline=True)
+        embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**",      inline=False)
+        embed.set_footer(text=f"อัปเดตโดย {interaction.user.display_name}")
+
+        await interaction.response.send_message(embed=embed)
+
+        # แก้ message แจ้งเตือนเดิม — ซ่อนปุ่ม
+        try:
+            msg = _pending_auto_update.get(self.msg_id, {}).get("msg")
+            if msg:
+                await msg.edit(view=None)
+        except Exception:
+            pass
+
+
+class KillButtonView(discord.ui.View):
+    def __init__(self, boss: dict, spawn_dt: datetime):
+        super().__init__(timeout=None)
+        self.boss     = boss
+        self.spawn_dt = spawn_dt
+
+    @discord.ui.button(label="ป้อนเวลาตาย", style=discord.ButtonStyle.danger, emoji="💀")
+    async def kill_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = KillModal(boss=self.boss, msg_id=interaction.message.id)
+        await interaction.response.send_modal(modal)
+
 
 # ==================== /kill ====================
 @tree.command(name="kill", description="บันทึกเวลาที่บอสตาย")
@@ -301,6 +475,30 @@ async def list_bosses(interaction: discord.Interaction, sheet: str = "all"):
 
     view = BossListView(bosses, title, color)
     await interaction.followup.send(embed=view.build_embed(), view=view)
+
+
+# ==================== ON READY ====================
+@bot.event
+async def on_guild_join(guild):
+    await tree.sync(guild=guild)
+    print(f"✅ Sync คำสั่งไปยัง Server ใหม่: {guild.name}")
+
+@bot.event
+async def on_ready():
+    for guild in bot.guilds:
+        await tree.sync(guild=guild)
+    await tree.sync()
+    try:
+        await fetch_bosses(force=True)
+        print(f"✅ โหลดข้อมูลบอสสำเร็จ: {len(_cache['data'])} ตัว")
+    except Exception as e:
+        import traceback
+        print(f"⚠️ โหลดข้อมูลบอสไม่สำเร็จ: {type(e).__name__}: {e}")
+        print(traceback.format_exc())
+    print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
+
+    bot.loop.create_task(notification_loop())
+    bot.loop.create_task(auto_update_loop())
 
 
 # ==================== RUN ====================
