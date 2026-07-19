@@ -7,6 +7,9 @@ import time
 import os
 from datetime import datetime, timezone, timedelta
 
+RETRY_ATTEMPTS = 3
+RETRY_DELAY    = 5  # วินาที
+
 # ==================== CONFIG ====================
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
 SHEET_ID   = "1LaJoabXkfB-qzg9HgbB1D15FQfrI9yq4-M4GpKDN_N8"
@@ -35,29 +38,43 @@ def _fetch_bosses_sync(force=False):
     if not force and time.time() - _cache["ts"] < CACHE_TTL:
         return _cache["data"]
 
-    client = get_gs_client()
-    ss     = client.open_by_key(SHEET_ID)
-    bosses = []
+    last_err = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            client = get_gs_client()
+            ss     = client.open_by_key(SHEET_ID)
+            bosses = []
 
-    for sheet_name in SHEETS_CONFIG:
-        ws   = ss.worksheet(sheet_name)
-        rows = ws.get_all_values()
-        for i, row in enumerate(rows[1:], start=2):
-            if not row[0]:
+            for sheet_name in SHEETS_CONFIG:
+                ws   = ss.worksheet(sheet_name)
+                rows = ws.get_all_values()
+                for i, row in enumerate(rows[1:], start=2):
+                    if not row[0]:
+                        continue
+                    bosses.append({
+                        "name":       row[0],
+                        "sheet":      sheet_name,
+                        "row":        i,
+                        "cd_hours":   int(row[1]) if row[1] else 0,
+                        "death_time": row[2] if len(row) > 2 else "",
+                        "spawn_time": row[3] if len(row) > 3 else "N/A",
+                        "notif_5min": row[6] if len(row) > 6 else "Not Sent",
+                        "notif_1min": row[7] if len(row) > 7 else "Not Sent",
+                    })
+
+            _cache = {"data": bosses, "ts": time.time()}
+            return bosses
+
+        except gspread.exceptions.APIError as e:
+            status = e.args[0].get("code", 0) if isinstance(e.args[0], dict) else 0
+            if status in (500, 503) and attempt < RETRY_ATTEMPTS:
+                print(f"⚠️ Google API {status} (ครั้งที่ {attempt}/{RETRY_ATTEMPTS}) — รอ {RETRY_DELAY}s แล้วลองใหม่")
+                time.sleep(RETRY_DELAY)
+                last_err = e
                 continue
-            bosses.append({
-                "name":       row[0],
-                "sheet":      sheet_name,
-                "row":        i,
-                "cd_hours":   int(row[1]) if row[1] else 0,
-                "death_time": row[2] if len(row) > 2 else "",
-                "spawn_time": row[3] if len(row) > 3 else "N/A",
-                "notif_5min": row[6] if len(row) > 6 else "Not Sent",
-                "notif_1min": row[7] if len(row) > 7 else "Not Sent",
-            })
+            raise
 
-    _cache = {"data": bosses, "ts": time.time()}
-    return bosses
+    raise last_err
 
 def _update_sheet_sync(sheet_name, row, time_str):
     client = get_gs_client()
@@ -72,10 +89,23 @@ def _update_sheet_sync(sheet_name, row, time_str):
     )
 
 def _update_notif_status_sync(sheet_name, row, col, value):
-    client = get_gs_client()
-    ws     = client.open_by_key(SHEET_ID).worksheet(sheet_name)
-    col_letter = "G" if col == 7 else "H"
-    ws.update(f"{col_letter}{row}", [[value]])
+    last_err = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            client = get_gs_client()
+            ws     = client.open_by_key(SHEET_ID).worksheet(sheet_name)
+            col_letter = "G" if col == 7 else "H"
+            ws.update(f"{col_letter}{row}", [[value]])
+            return
+        except gspread.exceptions.APIError as e:
+            status = e.args[0].get("code", 0) if isinstance(e.args[0], dict) else 0
+            if status in (500, 503) and attempt < RETRY_ATTEMPTS:
+                print(f"⚠️ Google API {status} อัปเดต notif status (ครั้งที่ {attempt}/{RETRY_ATTEMPTS}) — รอ {RETRY_DELAY}s")
+                time.sleep(RETRY_DELAY)
+                last_err = e
+                continue
+            raise
+    raise last_err
 
 # ==================== ASYNC WRAPPERS ====================
 async def fetch_bosses(force=False):
@@ -239,55 +269,7 @@ async def auto_update_loop():
         await asyncio.sleep(30)
 
 
-# ==================== KILL BUTTON + MODAL ====================
-class KillModal(discord.ui.Modal, title="ป้อนเวลาที่บอสตาย"):
-    death_time = discord.ui.TextInput(
-        label="เวลาตาย (HH:MM)",
-        placeholder="เช่น 14:30",
-        min_length=4,
-        max_length=5,
-    )
-
-    def __init__(self, boss: dict, msg_id: int):
-        super().__init__()
-        self.boss   = boss
-        self.msg_id = msg_id
-
-    async def on_submit(self, interaction: discord.Interaction):
-        time_str_raw = self.death_time.value.strip()
-        try:
-            dt = datetime.strptime(time_str_raw, "%H:%M")
-        except ValueError:
-            await interaction.response.send_message(
-                "⚠️ รูปแบบเวลาผิด กรุณาใช้ HH:MM เช่น `14:30`", ephemeral=True
-            )
-            return
-
-        time_str = f"{dt.hour:02d}:{dt.minute:02d}:00"
-        await update_sheet(self.boss["sheet"], self.boss["row"], time_str)
-
-        # ทำเครื่องหมายว่ากดแล้ว ไม่ต้อง auto-update
-        if self.msg_id in _pending_auto_update:
-            _pending_auto_update[self.msg_id]["pressed"] = True
-
-        cfg   = SHEETS_CONFIG[self.boss["sheet"]]
-        embed = discord.Embed(title="✅ บันทึกเวลาตายบอสสำเร็จ", color=0x2ECC71)
-        embed.add_field(name="👾 ชื่อบอส", value=f"**{self.boss['name']}**",    inline=True)
-        embed.add_field(name="📋 Sheet",   value=cfg["label"],                  inline=True)
-        embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**",      inline=False)
-        embed.set_footer(text=f"อัปเดตโดย {interaction.user.display_name}")
-
-        await interaction.response.send_message(embed=embed)
-
-        # แก้ message แจ้งเตือนเดิม — ซ่อนปุ่ม
-        try:
-            msg = _pending_auto_update.get(self.msg_id, {}).get("msg")
-            if msg:
-                await msg.edit(view=None)
-        except Exception:
-            pass
-
-
+# ==================== KILL BUTTON ====================
 class KillButtonView(discord.ui.View):
     def __init__(self, boss: dict, spawn_dt: datetime):
         super().__init__(timeout=None)
@@ -296,8 +278,26 @@ class KillButtonView(discord.ui.View):
 
     @discord.ui.button(label="UPDATE", style=discord.ButtonStyle.success, emoji="💀")
     async def kill_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = KillModal(boss=self.boss, msg_id=interaction.message.id)
-        await interaction.response.send_modal(modal)
+        now      = datetime.now(_BKK)
+        time_str = f"{now.hour:02d}:{now.minute:02d}:00"
+        await update_sheet(self.boss["sheet"], self.boss["row"], time_str)
+
+        if interaction.message.id in _pending_auto_update:
+            _pending_auto_update[interaction.message.id]["pressed"] = True
+
+        cfg   = SHEETS_CONFIG[self.boss["sheet"]]
+        embed = discord.Embed(title="✅ บันทึกเวลาตายบอสสำเร็จ", color=0x2ECC71)
+        embed.add_field(name="👾 ชื่อบอส", value=f"**{self.boss['name']}**",  inline=True)
+        embed.add_field(name="📋 Sheet",   value=cfg["label"],                 inline=True)
+        embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**",    inline=False)
+        embed.set_footer(text=f"อัปเดตโดย {interaction.user.display_name}")
+
+        await interaction.response.send_message(embed=embed)
+
+        try:
+            await interaction.message.edit(view=None)
+        except Exception:
+            pass
 
     @discord.ui.button(label="MISS", style=discord.ButtonStyle.danger, emoji="💤")
     async def miss_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
