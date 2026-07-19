@@ -269,7 +269,53 @@ async def auto_update_loop():
         await asyncio.sleep(30)
 
 
-# ==================== KILL BUTTON ====================
+# ==================== KILL BUTTON + MODAL ====================
+class KillModal(discord.ui.Modal, title="ป้อนเวลาที่บอสตาย"):
+    death_time = discord.ui.TextInput(
+        label="เวลาตาย (HH:MM)",
+        placeholder="เช่น 14:30",
+        min_length=4,
+        max_length=5,
+    )
+
+    def __init__(self, boss: dict, msg_id: int):
+        super().__init__()
+        self.boss   = boss
+        self.msg_id = msg_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        time_str_raw = self.death_time.value.strip()
+        try:
+            dt = datetime.strptime(time_str_raw, "%H:%M")
+        except ValueError:
+            await interaction.response.send_message(
+                "⚠️ รูปแบบเวลาผิด กรุณาใช้ HH:MM เช่น `14:30`", ephemeral=True
+            )
+            return
+
+        time_str = f"{dt.hour:02d}:{dt.minute:02d}:00"
+        await update_sheet(self.boss["sheet"], self.boss["row"], time_str)
+
+        if self.msg_id in _pending_auto_update:
+            _pending_auto_update[self.msg_id]["pressed"] = True
+
+        cfg   = SHEETS_CONFIG[self.boss["sheet"]]
+        embed = discord.Embed(title="✅ บันทึกเวลาตายบอสสำเร็จ", color=0x2ECC71)
+        embed.add_field(name="👾 ชื่อบอส", value=f"**{self.boss['name']}**",  inline=True)
+        embed.add_field(name="📋 Sheet",   value=cfg["label"],                 inline=True)
+        embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**",    inline=False)
+        embed.set_footer(text=f"อัปเดตโดย {interaction.user.display_name}")
+
+        await interaction.response.send_message(embed=embed)
+
+        try:
+            msg = _pending_auto_update.get(self.msg_id, {}).get("msg")
+            if msg:
+                await msg.edit(view=None)
+        except Exception:
+            pass
+
+
 class KillButtonView(discord.ui.View):
     def __init__(self, boss: dict, spawn_dt: datetime):
         super().__init__(timeout=None)
@@ -298,6 +344,11 @@ class KillButtonView(discord.ui.View):
             await interaction.message.edit(view=None)
         except Exception:
             pass
+
+    @discord.ui.button(label="UPDATE TIME", style=discord.ButtonStyle.primary, emoji="🕐")
+    async def kill_time_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = KillModal(boss=self.boss, msg_id=interaction.message.id)
+        await interaction.response.send_modal(modal)
 
     @discord.ui.button(label="MISS", style=discord.ButtonStyle.danger, emoji="💤")
     async def miss_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
