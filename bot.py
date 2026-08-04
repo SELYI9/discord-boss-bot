@@ -163,6 +163,7 @@ async def notification_loop():
     print("✅ Notification loop เริ่มทำงาน")
 
     while not bot.is_closed():
+        loop_start = time.time()
         try:
             bosses = await fetch_bosses(force=True)
             now    = datetime.now(_BKK)
@@ -185,6 +186,7 @@ async def notification_loop():
                     )
                     await update_notif_status(boss["sheet"], boss["row"], 7, "Sent")
                     boss["notif_5min"] = "Sent"
+                    print(f"🔔 แจ้งเตือน 5 นาที: {boss['name']} เกิด {spawn_dt.hour:02d}:{spawn_dt.minute:02d}")
 
                 # แจ้งเตือน 1 นาที — พร้อมปุ่มป้อนเวลาตาย
                 elif 0 < diff_min <= 1 and boss["notif_1min"] != "Sent":
@@ -198,8 +200,9 @@ async def notification_loop():
                     )
                     await update_notif_status(boss["sheet"], boss["row"], 8, "Sent")
                     boss["notif_1min"] = "Sent"
+                    print(f"🔔 แจ้งเตือน 1 นาที: {boss['name']} เกิด {spawn_dt.hour:02d}:{spawn_dt.minute:02d}")
 
-                    # ลงทะเบียนรอ auto-update หลัง spawn + 5 นาที
+                    # ลงทะเบียน message สำหรับ edit UI ภายหลัง
                     _pending_auto_update[msg.id] = {
                         "boss":     boss,
                         "spawn_dt": spawn_dt,
@@ -212,7 +215,9 @@ async def notification_loop():
             print(f"⚠️ Notification loop error: {e}")
             print(traceback.format_exc())
 
-        await asyncio.sleep(60)
+        # sleep เท่ากับเวลาที่เหลือจาก 60 วินาที ไม่ให้ drift
+        elapsed = time.time() - loop_start
+        await asyncio.sleep(max(0, 60 - elapsed))
 
 
 def _build_notif_embed(boss, spawn_dt, cfg, minutes):
@@ -231,40 +236,53 @@ async def auto_update_loop():
     await bot.wait_until_ready()
 
     while not bot.is_closed():
-        now      = datetime.now(_BKK)
-        to_clean = []
+        try:
+            bosses = await fetch_bosses(force=True)
+            now    = datetime.now(_BKK)
 
-        for msg_id, entry in list(_pending_auto_update.items()):
-            if entry["pressed"]:
-                to_clean.append(msg_id)
-                continue
+            for boss in bosses:
+                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"])
+                if not spawn_dt:
+                    continue
 
-            spawn_dt    = entry["spawn_dt"]
-            deadline    = spawn_dt + timedelta(minutes=5)
+                # auto-update เมื่อเวลาเกิดผ่านไปแล้ว 5 นาที
+                deadline = spawn_dt + timedelta(minutes=5)
+                if now < deadline:
+                    continue
 
-            if now >= deadline:
-                boss     = entry["boss"]
                 time_str = f"{spawn_dt.hour:02d}:{spawn_dt.minute:02d}:00"
                 try:
                     await update_sheet(boss["sheet"], boss["row"], time_str)
-                    # แก้ embed ของ message เดิม ให้แสดงว่า auto-update แล้ว
-                    msg = entry.get("msg")
-                    if msg:
-                        embed = discord.Embed(
-                            title="🔄 Auto-Update เวลาตาย",
-                            description=f"ไม่มีการป้อนเวลา ระบบบันทึกอัตโนมัติ",
-                            color=0x95A5A6,
-                        )
-                        embed.add_field(name="👾 ชื่อบอส",  value=f"**{boss['name']}**",  inline=True)
-                        embed.add_field(name="💀 เวลาตาย",  value=f"**{time_str[:5]} น.**", inline=True)
-                        await msg.edit(embed=embed, view=None)
                     print(f"🔄 Auto-update: {boss['name']} → {time_str[:5]}")
+
+                    # หา Discord message ที่ตรงกัน เพื่อ edit UI
+                    for msg_id, entry in list(_pending_auto_update.items()):
+                        e_boss = entry["boss"]
+                        if e_boss["name"] == boss["name"] and e_boss["sheet"] == boss["sheet"]:
+                            if not entry["pressed"]:
+                                msg = entry.get("msg")
+                                if msg:
+                                    embed = discord.Embed(
+                                        title="🔄 Auto-Update เวลาตาย",
+                                        description="ไม่มีการป้อนเวลา ระบบบันทึกอัตโนมัติ",
+                                        color=0x95A5A6,
+                                    )
+                                    embed.add_field(name="👾 ชื่อบอส", value=f"**{boss['name']}**",   inline=True)
+                                    embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**", inline=True)
+                                    try:
+                                        await msg.edit(embed=embed, view=None)
+                                    except Exception:
+                                        pass
+                            _pending_auto_update.pop(msg_id, None)
+                            break
+
                 except Exception as e:
                     print(f"⚠️ Auto-update error ({boss['name']}): {e}")
-                to_clean.append(msg_id)
 
-        for msg_id in to_clean:
-            _pending_auto_update.pop(msg_id, None)
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Auto-update loop error: {e}")
+            print(traceback.format_exc())
 
         await asyncio.sleep(30)
 
