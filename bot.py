@@ -95,7 +95,7 @@ def _update_notif_status_sync(sheet_name, row, col, value):
             client = get_gs_client()
             ws     = client.open_by_key(SHEET_ID).worksheet(sheet_name)
             col_letter = "G" if col == 7 else "H"
-            ws.update(f"{col_letter}{row}", [[value]])
+            ws.update(range_name=f"{col_letter}{row}", values=[[value]])
             return
         except gspread.exceptions.APIError as e:
             status = e.args[0].get("code", 0) if isinstance(e.args[0], dict) else 0
