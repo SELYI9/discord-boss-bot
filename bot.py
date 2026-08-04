@@ -123,7 +123,11 @@ async def update_notif_status(sheet_name, row, col, value):
 # ==================== HELPERS ====================
 _BKK = timezone(timedelta(hours=7))
 
-def calc_spawn_datetime(death_time_str: str, cd_hours: int):
+def calc_spawn_datetime(death_time_str: str, cd_hours: int, for_auto_update: bool = False):
+    """
+    for_auto_update=False → หา spawn ที่ใกล้จะมาถึง (ใช้กับ notification)
+    for_auto_update=True  → หา spawn ล่าสุดที่ผ่านไปแล้ว (ใช้กับ auto-update)
+    """
     if not death_time_str or not cd_hours:
         return None
     try:
@@ -131,15 +135,25 @@ def calc_spawn_datetime(death_time_str: str, cd_hours: int):
         hour   = int(parts[0])
         minute = int(parts[1])
         now    = datetime.now(_BKK)
-        death  = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        spawn  = death + timedelta(hours=cd_hours)
-        if spawn > now + timedelta(hours=cd_hours, minutes=5):
-            death -= timedelta(days=1)
-            spawn  = death + timedelta(hours=cd_hours)
-        if spawn < now - timedelta(minutes=5):
-            death -= timedelta(days=1)
-            spawn  = death + timedelta(hours=cd_hours)
-        return spawn
+        base   = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        if for_auto_update:
+            # หา spawn ล่าสุดที่ผ่านไปแล้ว (ไม่เกิน 24 ชั่วโมง)
+            best = None
+            for day_offset in [0, -1, -2]:
+                candidate = base + timedelta(days=day_offset) + timedelta(hours=cd_hours)
+                # spawn ต้องผ่านไปแล้ว (อยู่ในอดีต)
+                if candidate <= now and (best is None or candidate > best):
+                    best = candidate
+            return best
+        else:
+            # หา spawn ที่ใกล้จะมาถึง (notification)
+            spawn = base + timedelta(hours=cd_hours)
+            if spawn > now + timedelta(hours=cd_hours, minutes=5):
+                spawn = base - timedelta(days=1) + timedelta(hours=cd_hours)
+            if spawn < now - timedelta(minutes=5):
+                spawn = base - timedelta(days=1) + timedelta(hours=cd_hours)
+            return spawn
     except Exception:
         return None
 
@@ -241,7 +255,11 @@ async def auto_update_loop():
             now    = datetime.now(_BKK)
 
             for boss in bosses:
-                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"])
+                # ต้องมีการส่งแจ้งเตือนในรอบนี้ก่อน จึงจะ auto-update
+                if boss["notif_1min"] != "Sent" and boss["notif_5min"] != "Sent":
+                    continue
+
+                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"], for_auto_update=True)
                 if not spawn_dt:
                     continue
 
