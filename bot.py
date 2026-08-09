@@ -182,9 +182,18 @@ async def notification_loop():
         loop_start = time.time()
         try:
             bosses = await fetch_bosses(force=True)
-            now    = datetime.now(_BKK)
+        except Exception as e:
+            import traceback
+            print(f"⚠️ Notification loop — fetch error: {e}")
+            print(traceback.format_exc())
+            elapsed = time.time() - loop_start
+            await asyncio.sleep(max(0, 60 - elapsed))
+            continue
 
-            for boss in bosses:
+        now = datetime.now(_BKK)
+
+        for boss in bosses:
+            try:
                 spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"])
                 if not spawn_dt:
                     continue
@@ -194,12 +203,21 @@ async def notification_loop():
 
                 # แจ้งเตือน 5 นาที
                 if 3 < diff_min <= 5 and boss["notif_5min"] != "Sent":
-                    embed = _build_notif_embed(boss, spawn_dt, cfg, minutes=5)
+                    embed   = _build_notif_embed(boss, spawn_dt, cfg, minutes=5)
                     mention = f"<@&{ROLE_ID}> " if cfg["mention"] else ""
-                    await channel.send(
-                        content=f"{mention}⚠️ [5 นาที] **{boss['name']}** กำลังจะเกิด!",
-                        embed=embed,
-                    )
+                    for attempt in range(1, RETRY_ATTEMPTS + 1):
+                        try:
+                            await channel.send(
+                                content=f"{mention}⚠️ [5 นาที] **{boss['name']}** กำลังจะเกิด!",
+                                embed=embed,
+                            )
+                            break
+                        except discord.errors.DiscordServerError as e:
+                            if attempt < RETRY_ATTEMPTS:
+                                print(f"⚠️ Discord 503 ส่ง 5-min ({boss['name']}) ครั้ง {attempt} — รอ {RETRY_DELAY}s")
+                                await asyncio.sleep(RETRY_DELAY)
+                            else:
+                                raise
                     await update_notif_status(boss["sheet"], boss["row"], 7, "Sent")
                     boss["notif_5min"] = "Sent"
                     print(f"🔔 แจ้งเตือน 5 นาที: {boss['name']} เกิด {spawn_dt.hour:02d}:{spawn_dt.minute:02d}")
@@ -209,27 +227,36 @@ async def notification_loop():
                     embed   = _build_notif_embed(boss, spawn_dt, cfg, minutes=1)
                     mention = f"<@&{ROLE_ID}> " if cfg["mention"] else ""
                     view    = KillButtonView(boss, spawn_dt)
-                    msg = await channel.send(
-                        content=f"{mention}🚨 [1 นาที] **{boss['name']}** กำลังจะเกิด!",
-                        embed=embed,
-                        view=view,
-                    )
-                    await update_notif_status(boss["sheet"], boss["row"], 8, "Sent")
-                    boss["notif_1min"] = "Sent"
-                    print(f"🔔 แจ้งเตือน 1 นาที: {boss['name']} เกิด {spawn_dt.hour:02d}:{spawn_dt.minute:02d}")
+                    msg     = None
+                    for attempt in range(1, RETRY_ATTEMPTS + 1):
+                        try:
+                            msg = await channel.send(
+                                content=f"{mention}🚨 [1 นาที] **{boss['name']}** กำลังจะเกิด!",
+                                embed=embed,
+                                view=view,
+                            )
+                            break
+                        except discord.errors.DiscordServerError as e:
+                            if attempt < RETRY_ATTEMPTS:
+                                print(f"⚠️ Discord 503 ส่ง 1-min ({boss['name']}) ครั้ง {attempt} — รอ {RETRY_DELAY}s")
+                                await asyncio.sleep(RETRY_DELAY)
+                            else:
+                                raise
+                    if msg:
+                        await update_notif_status(boss["sheet"], boss["row"], 8, "Sent")
+                        boss["notif_1min"] = "Sent"
+                        print(f"🔔 แจ้งเตือน 1 นาที: {boss['name']} เกิด {spawn_dt.hour:02d}:{spawn_dt.minute:02d}")
+                        _pending_auto_update[msg.id] = {
+                            "boss":     boss,
+                            "spawn_dt": spawn_dt,
+                            "pressed":  False,
+                            "msg":      msg,
+                        }
 
-                    # ลงทะเบียน message สำหรับ edit UI ภายหลัง
-                    _pending_auto_update[msg.id] = {
-                        "boss":     boss,
-                        "spawn_dt": spawn_dt,
-                        "pressed":  False,
-                        "msg":      msg,
-                    }
-
-        except Exception as e:
-            import traceback
-            print(f"⚠️ Notification loop error: {e}")
-            print(traceback.format_exc())
+            except Exception as e:
+                import traceback
+                print(f"⚠️ Notification error ({boss['name']}): {e}")
+                print(traceback.format_exc())
 
         # sleep เท่ากับเวลาที่เหลือจาก 60 วินาที ไม่ให้ drift
         elapsed = time.time() - loop_start
@@ -605,8 +632,12 @@ async def on_ready():
         print(traceback.format_exc())
     print(f"✅ Bot พร้อมใช้งาน: {bot.user}")
 
-    bot.loop.create_task(notification_loop())
-    bot.loop.create_task(auto_update_loop())
+    # guard: สร้าง task เพียงครั้งเดียว ป้องกัน on_ready ถูกเรียกซ้ำตอน reconnect
+    if not getattr(bot, "_loops_started", False):
+        bot._loops_started = True
+        bot.loop.create_task(notification_loop())
+        bot.loop.create_task(auto_update_loop())
+        print("✅ Background loops เริ่มทำงาน")
 
 
 # ==================== RUN ====================
