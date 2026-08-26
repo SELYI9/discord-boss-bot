@@ -66,6 +66,7 @@ def _fetch_bosses_sync(force=False):
                         "cd_minutes": _parse_cd(row[1]) if row[1] else 0,
                         "death_time": row[2] if len(row) > 2 else "",
                         "spawn_time": row[3] if len(row) > 3 else "N/A",
+                        "map_boss":   row[4] if len(row) > 4 else "",
                         "notif_5min": row[6] if len(row) > 6 else "Not Sent",
                         "notif_1min": row[7] if len(row) > 7 else "Not Sent",
                     })
@@ -275,8 +276,10 @@ def _build_notif_embed(boss, spawn_dt, cfg, minutes):
     title = "⚠️ บอสกำลังจะเกิด!" if minutes == 5 else "🚨 บอสกำลังจะเกิดใน 1 นาที!"
     embed = discord.Embed(title=title, color=cfg["color"])
     embed.set_author(name=cfg["label"])
-    embed.add_field(name="👾 ชื่อบอส",  value=f"**{boss['name']}**",                          inline=True)
-    embed.add_field(name="⏰ เวลาเกิด", value=f"**{spawn_dt.hour:02d}:{spawn_dt.minute:02d} น.**", inline=True)
+    embed.add_field(name="👾 ชื่อบอส",  value=f"### **{boss['name']}**",                               inline=True)
+    embed.add_field(name="⏰ เวลาเกิด", value=f"### **{spawn_dt.hour:02d}:{spawn_dt.minute:02d} น.**", inline=True)
+    if boss.get("map_boss"):
+        embed.add_field(name="📍 สถานที่", value=f"**{boss['map_boss']}**", inline=False)
     embed.set_footer(text=f"Boss Tracker • แจ้งเตือนก่อนเกิด {minutes} นาที")
     embed.timestamp = datetime.now(_BKK)
     return embed
@@ -588,10 +591,14 @@ class BossListView(discord.ui.View):
             rows = [(dt, b) for dt, b in items if b["sheet"] == sheet_name]
             if not rows:
                 continue
-            lines = "\n".join(
-                f"`{dt.hour:02d}:{dt.minute:02d}` {b['name']}" for dt, b in rows
-            )
-            embed.add_field(name=cfg["label"], value=lines, inline=False)
+            lines = []
+            prev_hour = None
+            for dt, b in rows:
+                if prev_hour is not None and dt.hour != prev_hour:
+                    lines.append("─────────────────")
+                lines.append(f"`{dt.hour:02d}:{dt.minute:02d}` **{b['name']}**")
+                prev_hour = dt.hour
+            embed.add_field(name=cfg["label"], value="\n".join(lines), inline=False)
 
         if not items:
             embed.add_field(name="—", value="ไม่มีบอสในช่วงนี้", inline=False)
