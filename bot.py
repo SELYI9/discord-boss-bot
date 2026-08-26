@@ -18,6 +18,14 @@ ROLE_ID    = 1442005693182906420
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+def _parse_cd(value: str) -> int:
+    """แปลง CD value เป็นนาที รองรับ: '6' (ชั่วโมง), '3:30' (H:MM), '3.5' (ทศนิยมชั่วโมง)"""
+    value = value.strip()
+    if ":" in value:
+        parts = value.split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    return int(float(value) * 60)
+
 SHEETS_CONFIG = {
     "Boss_Server":   {"label": "🟢 Boss Server",  "color": 0x3498DB, "mention": True},
     "Boss_Invasion": {"label": "🔴 Boss Invasion", "color": 0xE74C3C, "mention": False},
@@ -55,7 +63,7 @@ def _fetch_bosses_sync(force=False):
                         "name":       row[0],
                         "sheet":      sheet_name,
                         "row":        i,
-                        "cd_hours":   int(row[1]) if row[1] else 0,
+                        "cd_minutes": _parse_cd(row[1]) if row[1] else 0,
                         "death_time": row[2] if len(row) > 2 else "",
                         "spawn_time": row[3] if len(row) > 3 else "N/A",
                         "notif_5min": row[6] if len(row) > 6 else "Not Sent",
@@ -123,8 +131,8 @@ async def update_notif_status(sheet_name, row, col, value):
 # ==================== HELPERS ====================
 _BKK = timezone(timedelta(hours=7))
 
-def calc_spawn_datetime(death_time_str: str, cd_hours: int, for_auto_update: bool = False):
-    if not death_time_str or not cd_hours:
+def calc_spawn_datetime(death_time_str: str, cd_minutes: int, for_auto_update: bool = False):
+    if not death_time_str or not cd_minutes:
         return None
     try:
         parts  = death_time_str.strip().split(":")
@@ -139,7 +147,7 @@ def calc_spawn_datetime(death_time_str: str, cd_hours: int, for_auto_update: boo
             cutoff = now - timedelta(hours=2)
             best   = None
             for day_offset in [0, -1]:
-                candidate = base + timedelta(days=day_offset) + timedelta(hours=cd_hours)
+                candidate = base + timedelta(days=day_offset) + timedelta(minutes=cd_minutes)
                 # ข้ามถ้า spawn time == death time (กรณี cd=24h, ป้องกัน infinite loop)
                 if candidate.hour == hour and candidate.minute == minute:
                     continue
@@ -150,11 +158,11 @@ def calc_spawn_datetime(death_time_str: str, cd_hours: int, for_auto_update: boo
             return best
         else:
             # หา spawn ที่ใกล้จะมาถึง (ใช้กับ notification)
-            spawn = base + timedelta(hours=cd_hours)
-            if spawn > now + timedelta(hours=cd_hours, minutes=5):
-                spawn = base - timedelta(days=1) + timedelta(hours=cd_hours)
+            spawn = base + timedelta(minutes=cd_minutes)
+            if spawn > now + timedelta(minutes=cd_minutes + 5):
+                spawn = base - timedelta(days=1) + timedelta(minutes=cd_minutes)
             if spawn < now - timedelta(minutes=5):
-                spawn = base - timedelta(days=1) + timedelta(hours=cd_hours)
+                spawn = base - timedelta(days=1) + timedelta(minutes=cd_minutes)
             return spawn
     except Exception:
         return None
@@ -194,7 +202,7 @@ async def notification_loop():
 
         for boss in bosses:
             try:
-                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"])
+                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_minutes"])
                 if not spawn_dt:
                     continue
 
@@ -274,6 +282,17 @@ def _build_notif_embed(boss, spawn_dt, cfg, minutes):
     return embed
 
 
+def _build_auto_update_embed(boss, time_str):
+    embed = discord.Embed(
+        title="🔄 Auto-Update เวลาตาย",
+        description="ไม่มีการป้อนเวลา ระบบบันทึกอัตโนมัติ",
+        color=0x95A5A6,
+    )
+    embed.add_field(name="👾 ชื่อบอส", value=f"**{boss['name']}**",   inline=True)
+    embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**", inline=True)
+    return embed
+
+
 # ==================== AUTO-UPDATE LOOP ====================
 async def auto_update_loop():
     await bot.wait_until_ready()
@@ -284,7 +303,7 @@ async def auto_update_loop():
             now    = datetime.now(_BKK)
 
             for boss in bosses:
-                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_hours"], for_auto_update=True)
+                spawn_dt = calc_spawn_datetime(boss["death_time"], boss["cd_minutes"], for_auto_update=True)
                 if not spawn_dt:
                     continue
 
@@ -299,28 +318,43 @@ async def auto_update_loop():
                     print(f"🔄 Auto-update: {boss['name']} → {time_str[:5]}")
 
                     # หา Discord message ที่ตรงกัน เพื่อ edit UI
+                    edited = False
                     for msg_id, entry in list(_pending_auto_update.items()):
                         e_boss = entry["boss"]
                         if e_boss["name"] == boss["name"] and e_boss["sheet"] == boss["sheet"]:
                             if not entry["pressed"]:
                                 msg = entry.get("msg")
                                 if msg:
-                                    embed = discord.Embed(
-                                        title="🔄 Auto-Update เวลาตาย",
-                                        description="ไม่มีการป้อนเวลา ระบบบันทึกอัตโนมัติ",
-                                        color=0x95A5A6,
-                                    )
-                                    embed.add_field(name="👾 ชื่อบอส", value=f"**{boss['name']}**",   inline=True)
-                                    embed.add_field(name="💀 เวลาตาย", value=f"**{time_str[:5]} น.**", inline=True)
                                     try:
-                                        await msg.edit(embed=embed, view=None)
+                                        await msg.edit(embed=_build_auto_update_embed(boss, time_str), view=None)
+                                        edited = True
                                     except Exception:
                                         pass
                             _pending_auto_update.pop(msg_id, None)
                             break
 
+                    # fallback: กรณี bot restart แล้ว _pending_auto_update หาย
+                    if not edited:
+                        channel = bot.get_channel(CHANNEL_ID)
+                        if channel:
+                            try:
+                                cutoff = datetime.now(timezone.utc) - timedelta(hours=3)
+                                async for message in channel.history(limit=100, after=cutoff):
+                                    if message.author.id != bot.user.id:
+                                        continue
+                                    if not message.components:
+                                        continue
+                                    if boss["name"] in (message.content or ""):
+                                        try:
+                                            await message.edit(embed=_build_auto_update_embed(boss, time_str), view=None)
+                                        except Exception:
+                                            pass
+                                        break
+                            except Exception as e:
+                                print(f"⚠️ Auto-update fallback scan error ({boss['name']}): {e}")
+
                 except Exception as e:
-                    print(f"⚠️ Auto-update error ({boss['name']}): {e}")
+                    print(f"⚠️ Auto-update sheet error ({boss['name']}): {e}")
 
         except Exception as e:
             import traceback
@@ -504,7 +538,7 @@ class BossListView(discord.ui.View):
     def _build_pages(self, bosses: list) -> list:
         dated = []
         for b in bosses:
-            spawn_dt = calc_spawn_datetime(b.get("death_time", ""), b.get("cd_hours", 0))
+            spawn_dt = calc_spawn_datetime(b.get("death_time", ""), b.get("cd_minutes", 0))
             if spawn_dt:
                 dated.append((spawn_dt, b))
 
