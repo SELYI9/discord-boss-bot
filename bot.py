@@ -274,10 +274,9 @@ async def notification_loop():
 
 def _build_notif_embed(boss, spawn_dt, cfg, minutes):
     title = "⚠️ บอสกำลังจะเกิด!" if minutes == 5 else "🚨 บอสกำลังจะเกิดใน 1 นาที!"
-    embed = discord.Embed(title=title, color=cfg["color"])
+    desc  = f"### {boss['name']}\n## ⏰ {spawn_dt.hour:02d}:{spawn_dt.minute:02d} น."
+    embed = discord.Embed(title=title, description=desc, color=cfg["color"])
     embed.set_author(name=cfg["label"])
-    embed.add_field(name="👾 ชื่อบอส",  value=f"### **{boss['name']}**",                               inline=True)
-    embed.add_field(name="⏰ เวลาเกิด", value=f"### **{spawn_dt.hour:02d}:{spawn_dt.minute:02d} น.**", inline=True)
     if boss.get("map_boss"):
         embed.add_field(name="📍 สถานที่", value=f"**{boss['map_boss']}**", inline=False)
     embed.set_footer(text=f"Boss Tracker • แจ้งเตือนก่อนเกิด {minutes} นาที")
