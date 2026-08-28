@@ -211,7 +211,7 @@ async def notification_loop():
                 cfg      = SHEETS_CONFIG[boss["sheet"]]
 
                 # แจ้งเตือน 5 นาที
-                if 3 < diff_min <= 5 and boss["notif_5min"] != "Sent":
+                if 3 < diff_min <= 6 and boss["notif_5min"] != "Sent":
                     embed   = _build_notif_embed(boss, spawn_dt, cfg, minutes=5)
                     mention = f"<@&{ROLE_ID}> " if cfg["mention"] else ""
                     for attempt in range(1, RETRY_ATTEMPTS + 1):
@@ -232,7 +232,7 @@ async def notification_loop():
                     print(f"🔔 แจ้งเตือน 5 นาที: {boss['name']} เกิด {spawn_dt.hour:02d}:{spawn_dt.minute:02d}")
 
                 # แจ้งเตือน 1 นาที — พร้อมปุ่มป้อนเวลาตาย
-                elif 0 < diff_min <= 1 and boss["notif_1min"] != "Sent":
+                elif 0 < diff_min <= 2 and boss["notif_1min"] != "Sent":
                     embed   = _build_notif_embed(boss, spawn_dt, cfg, minutes=1)
                     mention = f"<@&{ROLE_ID}> " if cfg["mention"] else ""
                     view    = KillButtonView(boss, spawn_dt)
