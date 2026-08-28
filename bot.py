@@ -586,18 +586,40 @@ class BossListView(discord.ui.View):
         total_bosses = sum(len(p["items"]) for p in self.pages)
         embed = discord.Embed(title=self.title, description=date_header, color=self.color)
 
-        for sheet_name, cfg in SHEETS_CONFIG.items():
-            rows = [(dt, b) for dt, b in items if b["sheet"] == sheet_name]
-            if not rows:
-                continue
+        sheets_with_rows = sum(
+            1 for sn in SHEETS_CONFIG
+            if any(b["sheet"] == sn for _, b in items)
+        )
+
+        if sheets_with_rows > 1:
+            # All view: รวมทุก sheet เรียงเวลา ใส่จุดสีแยก Server/Invasion
+            sheet_dot = {
+                "Boss_Server":   "🟢",
+                "Boss_Invasion": "🔴",
+            }
             lines = []
             prev_hour = None
-            for dt, b in rows:
+            for dt, b in items:
                 if prev_hour is not None and dt.hour != prev_hour:
                     lines.append("─────────────────")
-                lines.append(f"`{dt.hour:02d}:{dt.minute:02d}` **{b['name']}**")
+                dot = sheet_dot.get(b["sheet"], "")
+                lines.append(f"`{dt.hour:02d}:{dt.minute:02d}` {dot} **{b['name']}**")
                 prev_hour = dt.hour
-            embed.add_field(name=cfg["label"], value="\n".join(lines), inline=False)
+            embed.add_field(name="บอสทั้งหมด", value="\n".join(lines), inline=False)
+        else:
+            # Single sheet view: แยก field ตาม sheet มีเส้นแบ่งชั่วโมง
+            for sheet_name, cfg in SHEETS_CONFIG.items():
+                rows = [(dt, b) for dt, b in items if b["sheet"] == sheet_name]
+                if not rows:
+                    continue
+                lines = []
+                prev_hour = None
+                for dt, b in rows:
+                    if prev_hour is not None and dt.hour != prev_hour:
+                        lines.append("─────────────────")
+                    lines.append(f"`{dt.hour:02d}:{dt.minute:02d}` **{b['name']}**")
+                    prev_hour = dt.hour
+                embed.add_field(name=cfg["label"], value="\n".join(lines), inline=False)
 
         if not items:
             embed.add_field(name="—", value="ไม่มีบอสในช่วงนี้", inline=False)
@@ -627,7 +649,7 @@ class BossListView(discord.ui.View):
 @tree.command(name="list", description="แสดงรายชื่อบอสพร้อมเวลาเกิด")
 @app_commands.describe(sheet="เลือก Sheet ที่ต้องการดู")
 @app_commands.choices(sheet=[
-    app_commands.Choice(name="ทั้งหมด",         value="all"),
+    app_commands.Choice(name="All",              value="all"),
     app_commands.Choice(name="🟢 Boss Server",   value="Boss_Server"),
     app_commands.Choice(name="🔴 Boss Invasion",  value="Boss_Invasion"),
 ])
